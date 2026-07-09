@@ -1,0 +1,96 @@
+:root {
+  --bg: #0d1526;
+  --bg-elev: #141e33;
+  --bg-card: #17223a;
+  --border: #22304d;
+  --accent: #5b86c2;
+  --accent-2: #7fa8d6;
+  --text: #e6ecf5;
+  --text-dim: #8ea0bd;
+  --ok: #3ecf8e;
+  --warn: #e0a458;
+  --danger: #e05d6f;
+  --mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  --sans: "Inter", "Segoe UI", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+#app { max-width: 1400px; margin: 0 auto; padding: 24px; }
+
+.header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding-bottom: 20px; border-bottom: 1px solid var(--border); margin-bottom: 24px;
+}
+.brand { display: flex; align-items: baseline; gap: 12px; }
+.brand h1 { font-size: 22px; font-weight: 700; letter-spacing: 0.5px; }
+.brand .sub { font-size: 13px; color: var(--text-dim); }
+
+.status { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-dim); }
+.dot.live { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.dot.down { background: var(--danger); }
+
+.grid-kpi {
+  display: grid; grid-template-columns: repeat(5, 1fr);
+  gap: 16px; margin-bottom: 24px;
+}
+.kpi {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 10px; padding: 18px 20px;
+}
+.kpi .label { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.6px; }
+.kpi .value { font-size: 30px; font-weight: 700; margin-top: 8px; font-variant-numeric: tabular-nums; }
+.kpi.danger .value { color: var(--danger); }
+.kpi.warn .value { color: var(--warn); }
+.kpi.ok .value { color: var(--ok); }
+
+.grid-main { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
+
+.panel {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 10px; padding: 20px;
+}
+.panel h2 {
+  font-size: 14px; font-weight: 600; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 16px;
+}
+
+.feed { display: flex; flex-direction: column; gap: 8px; max-height: 460px; overflow-y: auto; }
+.feed-row {
+  display: grid; grid-template-columns: 80px 1fr auto;
+  align-items: center; gap: 12px; padding: 10px 12px;
+  background: var(--bg-elev); border-radius: 7px;
+  border-left: 3px solid var(--accent); font-size: 13px;
+  animation: slidein 0.3s ease;
+}
+.feed-row.block { border-left-color: var(--danger); }
+.feed-row.block_request { border-left-color: var(--danger); background: #241722; }
+@keyframes slidein { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: none; } }
+
+.tag { font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 4px; background: var(--border); color: var(--accent-2); }
+.tag.layer { color: var(--text-dim); }
+.action { font-weight: 600; font-size: 12px; }
+.action.tokenize { color: var(--accent-2); }
+.action.block, .action.block_request { color: var(--danger); }
+.hash { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+
+.bars { display: flex; flex-direction: column; gap: 12px; }
+.bar-row { display: flex; align-items: center; gap: 12px; }
+.bar-label { width: 90px; font-size: 12px; font-family: var(--mono); color: var(--text-dim); }
+.bar-track { flex: 1; height: 22px; background: var(--bg-elev); border-radius: 5px; overflow: hidden; }
+.bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 5px; transition: width 0.4s ease; }
+.bar-val { width: 32px; text-align: right; font-size: 13px; font-variant-numeric: tabular-nums; }
+
+.empty { color: var(--text-dim); font-size: 13px; text-align: center; padding: 40px 0; }
+
+.audit-badge { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; padding: 6px 12px; border-radius: 6px; background: var(--bg-elev); }
+.audit-badge.ok { color: var(--ok); }
+.audit-badge.broken { color: var(--danger); }

@@ -14,6 +14,8 @@ PRESIDIO_MAP: dict[str, EntityType] = {
     "IBAN_CODE": EntityType.IBAN,
 }
 
+_SENTENCE_ENDINGS = ".!?:;\n"
+
 
 def _build_analyzer():
     """Construit l'AnalyzerEngine Presidio en français, une seule fois."""
@@ -55,15 +57,28 @@ def _get_analyzer():
     return _analyzer
 
 
-def _plausible_person(span: str) -> bool:
-    """Garde-fou anti-faux-positif : un nom de personne commence par une
-    majuscule. Rejette les verbes/noms communs que le NER prend pour des
-    personnes (ex : 'rediger')."""
+def _plausible_person(span: str, start: int, text: str) -> bool:
+    """Garde-fous anti-faux-positifs pour les personnes.
+
+    1. Chaque mot du span doit commencer par une majuscule
+       (rejette 'rediger' et autres noms communs).
+    2. Un mot SEUL capitalisé en début de phrase n'est pas un indice :
+       'Redige un email...' -> 'Redige' est un verbe, pas un prénom.
+       Un nom seul reste accepté en milieu de phrase ('appelle Martin')."""
     words = span.strip().split()
     if not words:
         return False
-    capitalized = sum(1 for w in words if w[:1].isupper())
-    return capitalized >= max(1, len(words) - 1) and words[0][:1].isupper()
+
+    if not all(w[:1].isupper() for w in words):
+        return False
+
+    if len(words) == 1:
+        prefix = text[:start].rstrip()
+        sentence_initial = (not prefix) or (prefix[-1] in _SENTENCE_ENDINGS)
+        if sentence_initial:
+            return False
+
+    return True
 
 
 def scan_sync(text: str) -> list[Finding]:
@@ -78,8 +93,8 @@ def scan_sync(text: str) -> list[Finding]:
             continue
         span = text[r.start:r.end]
 
-        if etype == EntityType.PERSON and not _plausible_person(span):
-            continue  # 'rediger' et consorts : rejetés
+        if etype == EntityType.PERSON and not _plausible_person(span, r.start, text):
+            continue
 
         findings.append(Finding(
             entity_type=etype,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .config import get_settings
@@ -8,12 +9,25 @@ from .detection.engine import DetectionEngine
 from .detection.types import Action, EntityType
 from .detection import l3_semantic
 from .gateway.proxy import router as gateway_router
+from .dashboard import router as dashboard_router
 from .vault import fpe
 from .audit import chain
+from . import events
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name)
+
+# CORS : le front Vite (localhost:5173) doit pouvoir appeler l'API + WS.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(gateway_router)
+app.include_router(dashboard_router)
 engine = DetectionEngine()
 
 
@@ -41,7 +55,7 @@ async def ingest(req: IngestRequest) -> dict:
 
 
 @app.get("/corpus/stats")
-async def stats() -> dict:
+async def corpus_stats() -> dict:
     return l3_semantic.corpus_stats()
 
 
@@ -49,8 +63,8 @@ async def stats() -> dict:
 async def scan(req: ScanRequest) -> dict:
     """Scan seul (sans transmission) : utile pour tests et integration."""
     result = await engine.analyze(req.text)
+    await events.publish({"kind": "scan", "length": len(req.text)})
 
-    # --- Fuite de propriete intellectuelle : blocage TOTAL du prompt ---
     ip_leaks = [f for f in result.findings if f.entity_type == EntityType.IP_LEAK]
     if ip_leaks:
         leak = max(ip_leaks, key=lambda f: f.confidence)
@@ -61,6 +75,12 @@ async def scan(req: ScanRequest) -> dict:
                           or ",".join(leak.meta.get("source_docs", ["?"]))),
             detail={"confidence": leak.confidence, **leak.meta},
         )
+        await events.publish({
+            "kind": "decision", "action": "BLOCK_REQUEST",
+            "entity_type": "IP_LEAK", "layer": "L3",
+            "confidence": round(leak.confidence, 3),
+            "audit_hash": entry["hash"][:12],
+        })
         return {
             "blocked": True,
             "reason": "Contenu confidentiel de l'entreprise detecte",
@@ -70,7 +90,6 @@ async def scan(req: ScanRequest) -> dict:
             "audit_integrity": chain.verify_integrity(),
         }
 
-    # --- Sinon : tokenisation / blocage cible, prompt transmissible ---
     sanitized = req.text
     decisions = []
     for f in sorted(result.findings, key=lambda x: x.start, reverse=True):
@@ -87,6 +106,12 @@ async def scan(req: ScanRequest) -> dict:
             entity_id=f"{f.entity_type.value}:{f.start}",
             detail={"value": f.value, "confidence": f.confidence, "layer": f.layer},
         )
+        await events.publish({
+            "kind": "decision", "action": action.value,
+            "entity_type": f.entity_type.value, "layer": f.layer,
+            "confidence": round(f.confidence, 3),
+            "audit_hash": entry["hash"][:12],
+        })
         decisions.append({
             "type": f.entity_type.value, "action": action.value,
             "layer": f.layer, "audit_hash": entry["hash"][:12],
