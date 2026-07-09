@@ -7,11 +7,13 @@ from .config import get_settings
 from .detection.engine import DetectionEngine
 from .detection.types import Action, EntityType
 from .detection import l3_semantic
+from .gateway.proxy import router as gateway_router
 from .vault import fpe
 from .audit import chain
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name)
+app.include_router(gateway_router)
 engine = DetectionEngine()
 
 
@@ -45,29 +47,30 @@ async def stats() -> dict:
 
 @app.post("/gateway/scan")
 async def scan(req: ScanRequest) -> dict:
+    """Scan seul (sans transmission) : utile pour tests et integration."""
     result = await engine.analyze(req.text)
 
-    # --- Fuite de propriété intellectuelle : blocage TOTAL du prompt ---
+    # --- Fuite de propriete intellectuelle : blocage TOTAL du prompt ---
     ip_leaks = [f for f in result.findings if f.entity_type == EntityType.IP_LEAK]
     if ip_leaks:
         leak = max(ip_leaks, key=lambda f: f.confidence)
         entry = chain.append(
             action="BLOCK_REQUEST",
             entity_type="IP_LEAK",
-            entity_id=leak.meta.get("source_doc")
-                      or ",".join(leak.meta.get("source_docs", ["?"])),
+            entity_id=str(leak.meta.get("source_doc")
+                          or ",".join(leak.meta.get("source_docs", ["?"]))),
             detail={"confidence": leak.confidence, **leak.meta},
         )
         return {
             "blocked": True,
-            "reason": "Contenu confidentiel de l'entreprise détecté",
+            "reason": "Contenu confidentiel de l'entreprise detecte",
             "method": leak.meta.get("method"),
             "confidence": round(leak.confidence, 3),
             "audit_hash": entry["hash"][:12],
             "audit_integrity": chain.verify_integrity(),
         }
 
-    # --- Sinon : tokenisation / blocage ciblé, prompt transmissible ---
+    # --- Sinon : tokenisation / blocage cible, prompt transmissible ---
     sanitized = req.text
     decisions = []
     for f in sorted(result.findings, key=lambda x: x.start, reverse=True):
