@@ -11,8 +11,10 @@ export function useSentinel() {
     secrets_blocked: 0,
     ip_leaks_blocked: 0,
     by_type: {},
+    by_provider: {},
   });
-  const feed = ref([]); // événements récents (décisions)
+  const feed = ref([]);
+  const scans = ref([]);
 
   let ws = null;
   let reconnectTimer = null;
@@ -20,21 +22,25 @@ export function useSentinel() {
   function applySnapshot(snap) {
     if (snap.stats) Object.assign(stats, snap.stats);
     if (snap.recent) {
-      feed.value = snap.recent.filter((e) => e.kind === "decision").slice(0, 40);
+      feed.value = snap.recent.filter((e) => e.kind === "decision").slice(0, 60);
+      scans.value = snap.recent.filter((e) => e.kind === "scan").map((e) => e.ts).slice(0, 200);
     }
   }
 
   function handleEvent(evt) {
-    if (evt.kind === "snapshot") {
-      applySnapshot(evt);
-      return;
-    }
+    if (evt.kind === "snapshot") { applySnapshot(evt); return; }
     if (evt.kind === "scan") {
       stats.prompts_scanned += 1;
+      scans.value = [evt.ts, ...scans.value].slice(0, 200);
+      return;
+    }
+    if (evt.kind === "provider") {
+      const p = evt.provider || "?";
+      stats.by_provider[p] = (stats.by_provider[p] || 0) + 1;
       return;
     }
     if (evt.kind === "decision") {
-      feed.value = [evt, ...feed.value].slice(0, 40);
+      feed.value = [evt, ...feed.value].slice(0, 60);
       const t = evt.entity_type || "?";
       if (evt.action === "TOKENIZE") {
         stats.entities_tokenized += 1;
@@ -53,10 +59,7 @@ export function useSentinel() {
     ws = new WebSocket(WS_URL);
     ws.onopen = () => { connected.value = true; };
     ws.onmessage = (e) => handleEvent(JSON.parse(e.data));
-    ws.onclose = () => {
-      connected.value = false;
-      reconnectTimer = setTimeout(connect, 2000); // reconnexion auto
-    };
+    ws.onclose = () => { connected.value = false; reconnectTimer = setTimeout(connect, 2000); };
     ws.onerror = () => ws && ws.close();
   }
 
@@ -66,7 +69,7 @@ export function useSentinel() {
       const data = await r.json();
       applySnapshot(data);
       auditIntegrity.value = data.audit_integrity;
-    } catch (_) { /* backend pas prêt : le WS prendra le relais */ }
+    } catch (_) { /* backend pas prêt */ }
   }
 
   onMounted(() => { loadInitial(); connect(); });
@@ -75,5 +78,5 @@ export function useSentinel() {
     if (reconnectTimer) clearTimeout(reconnectTimer);
   });
 
-  return { connected, auditIntegrity, stats, feed };
+  return { connected, auditIntegrity, stats, feed, scans };
 }

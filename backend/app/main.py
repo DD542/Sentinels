@@ -17,10 +17,14 @@ from . import events
 settings = get_settings()
 app = FastAPI(title=settings.app_name)
 
-# CORS : le front Vite (localhost:5173) doit pouvoir appeler l'API + WS.
+# CORS : le front Vite (5173 ou 5174 selon le port libre) doit pouvoir
+# appeler l'API REST et ouvrir le WebSocket du dashboard.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173", "http://127.0.0.1:5173",
+        "http://localhost:5174", "http://127.0.0.1:5174",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

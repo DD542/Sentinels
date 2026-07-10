@@ -7,14 +7,14 @@ from collections import deque
 _HISTORY: deque[dict] = deque(maxlen=200)
 _SUBSCRIBERS: set[asyncio.Queue] = set()
 
-# Compteurs cumulés pour le dashboard
 _STATS = {
     "prompts_scanned": 0,
     "requests_blocked": 0,
     "entities_tokenized": 0,
     "secrets_blocked": 0,
     "ip_leaks_blocked": 0,
-    "by_type": {},        # {"IBAN": 12, "PERSON": 8, ...}
+    "by_type": {},
+    "by_provider": {},   # {"groq": 12, "anthropic": 3, ...}
 }
 
 
@@ -22,15 +22,20 @@ def _register_type(entity_type: str) -> None:
     _STATS["by_type"][entity_type] = _STATS["by_type"].get(entity_type, 0) + 1
 
 
+def register_provider(provider: str) -> None:
+    _STATS["by_provider"][provider] = _STATS["by_provider"].get(provider, 0) + 1
+
+
 async def publish(event: dict) -> None:
     """Diffuse un événement à tous les abonnés WebSocket + historise."""
     event = {"ts": time.time(), **event}
     _HISTORY.appendleft(event)
 
-    # Mise à jour des compteurs selon le type d'événement
     kind = event.get("kind")
     if kind == "scan":
         _STATS["prompts_scanned"] += 1
+    elif kind == "provider":
+        register_provider(event.get("provider", "?"))
     elif kind == "decision":
         action = event.get("action")
         etype = event.get("entity_type", "?")
@@ -60,7 +65,7 @@ def publish_sync(event: dict) -> None:
         loop = asyncio.get_running_loop()
         loop.create_task(publish(event))
     except RuntimeError:
-        pass  # pas de boucle : on ignore silencieusement
+        pass
 
 
 def subscribe() -> asyncio.Queue:
@@ -83,3 +88,4 @@ def reset() -> None:
               "secrets_blocked", "ip_leaks_blocked"):
         _STATS[k] = 0
     _STATS["by_type"] = {}
+    _STATS["by_provider"] = {}

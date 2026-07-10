@@ -126,6 +126,9 @@ async def chat(req: ChatRequest) -> dict:
         else:
             clean_messages.append(msg)
 
+    # Registre Shadow AI : on trace le fournisseur appele (souverainete).
+    await events.publish({"kind": "provider", "provider": req.provider})
+
     try:
         raw_answer = await _forward(req, clean_messages)
     except httpx.HTTPStatusError as e:
