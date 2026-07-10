@@ -1,21 +1,25 @@
 from functools import lru_cache
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
+
+# Chemin ABSOLU du .env : backend/.env, quel que soit le dossier de lancement.
+# config.py est dans backend/app/, donc .env est un niveau au-dessus.
+_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=str(_ENV_PATH), extra="ignore")
 
     # Base
     app_name: str = "SENTINEL"
     environment: str = "development"
 
     # --- Persistance (Neon Postgres) ---
-    # Vide = repli mémoire (démo). Renseigné = persistance réelle.
-    # Format asyncpg : postgresql://user:pass@host/db?sslmode=require
     database_url: str = ""
-    vault_ttl_hours: int = 24          # durée de vie d'une correspondance token
-    persist_audit: bool = True         # journal d'audit en base
-    persist_vault: bool = True         # vault chiffré en base
+    vault_ttl_hours: int = 24
+    persist_audit: bool = True
+    persist_vault: bool = True
 
     # Clés cryptographiques (32 octets hex chacune ; openssl rand -hex 32)
     vault_master_key: str = "0" * 64
@@ -35,6 +39,14 @@ class Settings(BaseSettings):
     anthropic_base: str = "https://api.anthropic.com"
     openai_base: str = "https://api.openai.com"
     groq_base: str = "https://api.groq.com"
+
+    @field_validator("vault_master_key", "audit_hmac_key", "database_url",
+                     mode="before")
+    @classmethod
+    def _strip_whitespace(cls, v):
+        if isinstance(v, str):
+            return v.strip().strip("\r\n")
+        return v
 
 
 @lru_cache
