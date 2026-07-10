@@ -9,7 +9,9 @@ dependencies = [
     "asyncpg>=0.30",
     "sqlalchemy[asyncio]>=2.0",
     "httpx>=0.27",
+    "cryptography>=43.0",
 ]
 
 [project.optional-dependencies]
 detection = ["presidio-analyzer>=2.2", "spacy>=3.7", "pgvector>=0.3"]
+embeddings = ["sentence-transformers>=3.0"]

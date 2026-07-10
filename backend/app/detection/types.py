@@ -36,6 +36,7 @@ class Finding:
 @dataclass
 class DetectionResult:
     findings: list[Finding] = field(default_factory=list)
+    evasion_attempts: list[str] = field(default_factory=list)
 
     def add(self, finding: Finding) -> None:
         self.findings.append(finding)

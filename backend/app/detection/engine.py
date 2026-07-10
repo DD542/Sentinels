@@ -3,10 +3,10 @@ import asyncio
 from ..config import get_settings
 from .types import DetectionResult, Finding, EntityType, Action
 from . import l1_deterministic
+from . import l0_normalize
 
 settings = get_settings()
 
-# Types dont la presence rend un LOCATION potentiellement identifiant
 IDENTIFYING_TYPES = {
     EntityType.PERSON, EntityType.EMAIL, EntityType.PHONE_FR,
     EntityType.IBAN, EntityType.CARD, EntityType.NIR,
@@ -14,35 +14,37 @@ IDENTIFYING_TYPES = {
 
 
 class DetectionEngine:
-    """Defense en profondeur : L1 deterministe, L2 NER, L3 semantique,
-    L4 juge local. Chaque couche degrade proprement si indisponible."""
+    """Défense en profondeur : L0 dé-obfuscation, L1 déterministe,
+    L2 NER, L3 sémantique, L4 juge local. Chaque couche dégrade
+    proprement si indisponible."""
 
     async def analyze(self, text: str) -> DetectionResult:
         result = DetectionResult()
 
-        # L1 — deterministe (< 1ms, confiance 1.0)
-        for f in l1_deterministic.scan(text):
-            result.add(f)
+        # L0 — révèle les données dissimulées (base64, hex, espacement).
+        # On scanne l'original ET chaque variante dé-obfusquée.
+        views = l0_normalize.normalized_views(text)
 
-        # L2 — NER contextuel (Presidio, bloquant -> thread dedie)
-        for f in await self._l2_ner(text):
-            if not self._overlaps_existing(f, result):
+        # Tentatives de contournement : drapeau d'audit (n'altère pas la détection)
+        evasion = l0_normalize.detect_evasion(text)
+        if evasion:
+            result.evasion_attempts = evasion
+
+        seen_values: set[tuple[str, int]] = set()
+
+        for view in views:
+            sub = await self._analyze_single(view.text)
+            for f in sub.findings:
+                key = (f.entity_type.value, hash(f.value))
+                if key in seen_values:
+                    continue
+                seen_values.add(key)
+                # Trace la technique d'obfuscation détectée
+                if view.technique != "raw":
+                    f.meta["obfuscation"] = view.technique
                 result.add(f)
 
-        # L3 — empreinte semantique corpus IP
-        # (IP_LEAK couvre tout le prompt : pas de deduplication)
-        for f in await self._l3_semantic(text):
-            result.add(f)
-
-        # L4 — juge local sur cas ambigus
-        if self._is_ambiguous(result):
-            for f in await self._l4_judge(text, result):
-                if not self._overlaps_existing(f, result):
-                    result.add(f)
-
-        # --- Regle contextuelle : un lieu seul n'identifie personne ---
-        # 'France' dans une question generique reste intact ; le meme mot
-        # dans un prompt contenant un nom/IBAN/email devient tokenisable.
+        # Règle contextuelle : un lieu seul n'identifie personne.
         has_identifier = any(
             f.entity_type in IDENTIFYING_TYPES for f in result.findings
         )
@@ -54,17 +56,38 @@ class DetectionEngine:
 
         return result
 
+    async def _analyze_single(self, text: str) -> DetectionResult:
+        """Pipeline L1-L4 sur un texte donné (une vue)."""
+        result = DetectionResult()
+
+        for f in l1_deterministic.scan(text):
+            result.add(f)
+
+        for f in await self._l2_ner(text):
+            if not self._overlaps_existing(f, result):
+                result.add(f)
+
+        for f in await self._l3_semantic(text):
+            result.add(f)
+
+        if self._is_ambiguous(result):
+            for f in await self._l4_judge(text, result):
+                if not self._overlaps_existing(f, result):
+                    result.add(f)
+
+        return result
+
     # --- Couches ---
 
     async def _l2_ner(self, text: str) -> list[Finding]:
         try:
             from . import l2_ner
         except ImportError:
-            return []  # Presidio non installe : degradation propre
+            return []
         try:
             return await asyncio.to_thread(l2_ner.scan_sync, text)
         except Exception:
-            return []  # L2 ne doit jamais faire tomber la passerelle
+            return []
 
     async def _l3_semantic(self, text: str) -> list[Finding]:
         try:
@@ -74,7 +97,7 @@ class DetectionEngine:
         try:
             return await asyncio.to_thread(l3_semantic.scan_sync, text)
         except Exception:
-            return []  # L3 ne doit jamais faire tomber la passerelle
+            return []
 
     async def _l4_judge(self, text: str, partial: DetectionResult) -> list[Finding]:
         try:
@@ -84,20 +107,19 @@ class DetectionEngine:
         try:
             return await l4_judge.judge(text)
         except Exception:
-            return []  # le juge ne doit jamais faire tomber la passerelle
+            return []
 
     # --- Utilitaires ---
 
     @staticmethod
     def _overlaps_existing(f: Finding, result: DetectionResult) -> bool:
-        """L1 (valide algorithmiquement) prime sur L2/L4 en recouvrement."""
         return any(f.start < e.end and f.end > e.start for e in result.findings)
 
     def _is_ambiguous(self, result: DetectionResult) -> bool:
         c = result.max_confidence()
         return settings.ambiguity_low <= c <= settings.ambiguity_high
 
-    # --- Politique de decision ---
+    # --- Politique de décision ---
 
     def decide(self, finding: Finding) -> Action:
         if finding.entity_type == EntityType.SECRET:

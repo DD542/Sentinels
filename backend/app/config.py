@@ -9,18 +9,22 @@ class Settings(BaseSettings):
     app_name: str = "SENTINEL"
     environment: str = "development"
 
-    # Base de données
-    database_url: str = "postgresql+asyncpg://user:pass@localhost:5432/sentinel"
+    # --- Persistance (Neon Postgres) ---
+    # Vide = repli mémoire (démo). Renseigné = persistance réelle.
+    # Format asyncpg : postgresql://user:pass@host/db?sslmode=require
+    database_url: str = ""
+    vault_ttl_hours: int = 24          # durée de vie d'une correspondance token
+    persist_audit: bool = True         # journal d'audit en base
+    persist_vault: bool = True         # vault chiffré en base
 
-    # Clés cryptographiques (32 octets hex chacune, à générer en prod)
-    # openssl rand -hex 32
-    vault_master_key: str = "0" * 64          # clé maître du vault de tokenisation
-    audit_hmac_key: str = "1" * 64            # clé HMAC du journal d'audit
+    # Clés cryptographiques (32 octets hex chacune ; openssl rand -hex 32)
+    vault_master_key: str = "0" * 64
+    audit_hmac_key: str = "1" * 64
 
     # Détection
-    l3_similarity_threshold: float = 0.86     # seuil pgvector fuite IP
-    l3_simhash_max_distance: int = 3          # distance Hamming SimHash
-    ambiguity_low: float = 0.35               # zone grise -> juge L4
+    l3_similarity_threshold: float = 0.86
+    l3_simhash_max_distance: int = 3
+    ambiguity_low: float = 0.35
     ambiguity_high: float = 0.65
 
     # Juge local

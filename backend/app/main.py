@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
-from fastapi import FastAPI
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -13,12 +14,23 @@ from .dashboard import router as dashboard_router
 from .vault import fpe
 from .audit import chain
 from . import events
+from . import db
+from . import auth
 
 settings = get_settings()
-app = FastAPI(title=settings.app_name)
 
-# CORS : le front Vite (5173 ou 5174 selon le port libre) doit pouvoir
-# appeler l'API REST et ouvrir le WebSocket du dashboard.
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await db.init_db()
+    await auth.load_keys_from_db()
+    await chain.load_from_db()
+    yield
+    await db.close_db()
+
+
+app = FastAPI(title=settings.app_name, lifespan=lifespan)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -44,17 +56,38 @@ class IngestRequest(BaseModel):
     text: str
 
 
+class KeyRequest(BaseModel):
+    client_id: str
+    admin_token: str
+
+
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "service": settings.app_name}
+    return {"status": "ok", "service": settings.app_name,
+            "persistence": db.is_enabled()}
+
+
+@app.post("/admin/keys")
+async def create_key(req: KeyRequest) -> dict:
+    """Crée une clé API client. Protégé par le token admin
+    (= la clé HMAC d'audit du .env, connue du seul exploitant)."""
+    if req.admin_token != settings.audit_hmac_key:
+        raise HTTPException(status_code=403, detail="Token admin invalide")
+    raw_key = await auth.generate_key_async(req.client_id)
+    return {
+        "client_id": req.client_id,
+        "api_key": raw_key,
+        "warning": "Cette cle ne sera affichee qu'une seule fois. Conservez-la.",
+    }
 
 
 @app.post("/corpus/ingest")
-async def ingest(req: IngestRequest) -> dict:
-    """Indexe un document confidentiel de l'entreprise."""
+async def ingest(req: IngestRequest,
+                 client_id: str = Depends(auth.verify_key)) -> dict:
     result = await asyncio.to_thread(l3_semantic.ingest_document, req.doc_id, req.text)
-    chain.append("CORPUS_INGEST", "DOCUMENT", req.doc_id,
-                 {"shingles": result["shingles"], "chunks": result["chunks"]})
+    await chain.append_async("CORPUS_INGEST", "DOCUMENT", req.doc_id,
+                             {"shingles": result["shingles"], "chunks": result["chunks"],
+                              "client": client_id})
     return result
 
 
@@ -64,21 +97,31 @@ async def corpus_stats() -> dict:
 
 
 @app.post("/gateway/scan")
-async def scan(req: ScanRequest) -> dict:
-    """Scan seul (sans transmission) : utile pour tests et integration."""
+async def scan(req: ScanRequest,
+               client_id: str = Depends(auth.verify_key)) -> dict:
+    """Scan seul (sans transmission). Protégé par clé SENTINEL."""
     result = await engine.analyze(req.text)
     await events.publish({"kind": "scan", "length": len(req.text)})
+
+    evasion_flag = None
+    if result.evasion_attempts:
+        entry = await chain.append_async("EVASION_ATTEMPT", "GATEWAY", client_id,
+                                         {"patterns": result.evasion_attempts})
+        evasion_flag = entry["hash"][:12]
+        await events.publish({
+            "kind": "decision", "action": "EVASION_FLAG",
+            "entity_type": "EVASION", "layer": "L0",
+            "confidence": 1.0, "audit_hash": evasion_flag,
+        })
 
     ip_leaks = [f for f in result.findings if f.entity_type == EntityType.IP_LEAK]
     if ip_leaks:
         leak = max(ip_leaks, key=lambda f: f.confidence)
-        entry = chain.append(
-            action="BLOCK_REQUEST",
-            entity_type="IP_LEAK",
-            entity_id=str(leak.meta.get("source_doc")
-                          or ",".join(leak.meta.get("source_docs", ["?"]))),
-            detail={"confidence": leak.confidence, **leak.meta},
-        )
+        entry = await chain.append_async(
+            "BLOCK_REQUEST", "IP_LEAK",
+            str(leak.meta.get("source_doc")
+                or ",".join(leak.meta.get("source_docs", ["?"]))),
+            {"confidence": leak.confidence, **leak.meta})
         await events.publish({
             "kind": "decision", "action": "BLOCK_REQUEST",
             "entity_type": "IP_LEAK", "layer": "L3",
@@ -90,26 +133,28 @@ async def scan(req: ScanRequest) -> dict:
             "reason": "Contenu confidentiel de l'entreprise detecte",
             "method": leak.meta.get("method"),
             "confidence": round(leak.confidence, 3),
+            "evasion_flag": evasion_flag,
             "audit_hash": entry["hash"][:12],
-            "audit_integrity": chain.verify_integrity(),
+            "audit_integrity": await chain.verify_integrity_async(),
         }
 
     sanitized = req.text
     decisions = []
-    for f in sorted(result.findings, key=lambda x: x.start, reverse=True):
+    positional = [f for f in result.findings if "obfuscation" not in f.meta]
+    by_value = [f for f in result.findings if "obfuscation" in f.meta]
+
+    for f in sorted(positional, key=lambda x: x.start, reverse=True):
         action = engine.decide(f)
         if action == Action.BLOCK:
             sanitized = sanitized[:f.start] + "[BLOCKED]" + sanitized[f.end:]
         elif action == Action.TOKENIZE:
-            token = fpe.tokenize(f.value, f.entity_type)
+            token = await fpe.tokenize_async(f.value, f.entity_type)
             sanitized = sanitized[:f.start] + token + sanitized[f.end:]
 
-        entry = chain.append(
-            action=action.value,
-            entity_type=f.entity_type.value,
-            entity_id=f"{f.entity_type.value}:{f.start}",
-            detail={"value": f.value, "confidence": f.confidence, "layer": f.layer},
-        )
+        entry = await chain.append_async(
+            action.value, f.entity_type.value,
+            f"{f.entity_type.value}:{f.start}",
+            {"value": f.value, "confidence": f.confidence, "layer": f.layer})
         await events.publish({
             "kind": "decision", "action": action.value,
             "entity_type": f.entity_type.value, "layer": f.layer,
@@ -121,10 +166,30 @@ async def scan(req: ScanRequest) -> dict:
             "layer": f.layer, "audit_hash": entry["hash"][:12],
         })
 
+    for f in by_value:
+        entry = await chain.append_async(
+            "BLOCK", f.entity_type.value, f"{f.entity_type.value}:obf",
+            {"confidence": f.confidence, "layer": f.layer,
+             "obfuscation": f.meta.get("obfuscation")})
+        await events.publish({
+            "kind": "decision", "action": "BLOCK",
+            "entity_type": f.entity_type.value, "layer": f.layer,
+            "confidence": round(f.confidence, 3),
+            "audit_hash": entry["hash"][:12],
+        })
+        decisions.append({
+            "type": f.entity_type.value, "action": "BLOCK",
+            "layer": f.layer, "obfuscation": f.meta.get("obfuscation"),
+            "audit_hash": entry["hash"][:12],
+        })
+    if by_value:
+        sanitized += "\n[Contenu dissimulé détecté et retiré par SENTINEL]"
+
     return {
         "blocked": False,
         "original_length": len(req.text),
         "sanitized": sanitized,
         "decisions": decisions,
-        "audit_integrity": chain.verify_integrity(),
+        "evasion_flag": evasion_flag,
+        "audit_integrity": await chain.verify_integrity_async(),
     }

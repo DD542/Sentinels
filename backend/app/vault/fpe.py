@@ -2,26 +2,24 @@ from __future__ import annotations
 import hashlib
 import hmac
 import re
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 
 from ..config import get_settings
 from ..detection.types import EntityType
+from .. import db
 
 settings = get_settings()
 _KEY = bytes.fromhex(settings.vault_master_key)
 
-# Table éphémère token -> (valeur réelle, type d'entité)
-# (en prod : Redis chiffré, TTL court)
+# Cache mémoire : token -> (valeur réelle, type). Toujours actif.
 _REVERSE_MAP: dict[str, tuple[str, EntityType]] = {}
 
-# --- Prénoms factices, séparés par genre : le FPE doit préserver le
-# genre pour ne pas produire de "Madame Jean Dupont" après restauration.
 _FAKE_MALE = ["Marc", "Paul", "Hugo", "Louis", "Victor", "Simon", "Denis"]
 _FAKE_FEMALE = ["Julie", "Claire", "Lea", "Nadia", "Anne", "Sophie", "Manon"]
 _FAKE_LAST = ["Legrand", "Moreau", "Dubois", "Girard", "Renard", "Faure", "Blanc"]
 _FAKE_CITIES = ["Beaulieu", "Montvert", "Rocheval", "Clairfont", "Valbonne"]
 
-# Prénoms français courants pour la détection de genre de l'original.
 _MALE_NAMES = {
     "jean", "pierre", "michel", "alain", "philippe", "nicolas", "christophe",
     "laurent", "francois", "stephane", "david", "pascal", "eric", "thomas",
@@ -39,17 +37,10 @@ _FEMALE_NAMES = {
 }
 
 _SEPARATORS = re.compile(r"[\s\u00A0-]")
-
-# Types numériques/structurés que les LLM reformatent ou corrompent
-# librement : désanonymisation tolérante puis récupération floue.
 _REFORMATTABLE = {
     EntityType.IBAN, EntityType.CARD, EntityType.PHONE_FR,
     EntityType.NIR, EntityType.SIRET,
 }
-
-# Candidats "donnée structurée" dans une réponse LLM (pour la
-# récupération floue) : 2 lettres + 2 chiffres + suite alphanum/séparateurs,
-# ou longue suite de chiffres/séparateurs.
 _FUZZY_CANDIDATE = re.compile(
     r"\b[A-Z]{2}\d{2}(?:[\s\u00A0.\-]?[A-Z0-9]){8,40}"
     r"|\b\d(?:[\s\u00A0.\-]?\d){9,25}\b",
@@ -59,7 +50,6 @@ _FUZZY_THRESHOLD = 0.72
 
 
 def _prf(value: str, salt: str = "") -> int:
-    """Pseudo-aléatoire déterministe dérivé de la clé maître."""
     digest = hmac.new(_KEY, (salt + value).encode(), hashlib.sha256).digest()
     return int.from_bytes(digest[:16], "big")
 
@@ -68,9 +58,7 @@ def _norm(s: str) -> str:
     return re.sub(r"[\s\u00A0.\-]", "", s).upper()
 
 
-# ============================================================
-# IBAN factice VALIDE (format préservé + clé mod-97 recalculée)
-# ============================================================
+# ----- Génération des substituts (inchangée) -----
 
 def _fake_iban(original: str) -> str:
     stream = _prf(original)
@@ -80,35 +68,25 @@ def _fake_iban(original: str) -> str:
             if alnum_idx < 4:
                 out.append(ch.upper() if ch.isalpha() else ch)
             elif ch.isdigit():
-                out.append(str(stream % 10))
-                stream //= 10
-                if stream < 10:
-                    stream = _prf(original, str(alnum_idx))
+                out.append(str(stream % 10)); stream //= 10
+                if stream < 10: stream = _prf(original, str(alnum_idx))
             else:
-                out.append(chr(ord("A") + stream % 26))
-                stream //= 26
-                if stream < 26:
-                    stream = _prf(original, str(alnum_idx))
+                out.append(chr(ord("A") + stream % 26)); stream //= 26
+                if stream < 26: stream = _prf(original, str(alnum_idx))
             alnum_idx += 1
         else:
             out.append(ch)
     fake = "".join(out)
-
-    # Recalcule la clé de contrôle : l'IBAN factice doit être VALIDE.
     norm = _SEPARATORS.sub("", fake).upper()
     country, bban = norm[:2], norm[4:]
     numeric = "".join(str(int(c, 36)) for c in bban + country + "00")
     check_str = f"{98 - int(numeric) % 97:02d}"
-
     result, alnum_idx = [], 0
     for ch in fake:
         if ch.isalnum():
-            if alnum_idx == 2:
-                result.append(check_str[0])
-            elif alnum_idx == 3:
-                result.append(check_str[1])
-            else:
-                result.append(ch)
+            if alnum_idx == 2: result.append(check_str[0])
+            elif alnum_idx == 3: result.append(check_str[1])
+            else: result.append(ch)
             alnum_idx += 1
         else:
             result.append(ch)
@@ -116,72 +94,104 @@ def _fake_iban(original: str) -> str:
 
 
 def _fake_digits(original: str) -> str:
-    """Chiffres factices, format préservé (téléphone, SIRET, NIR, carte)."""
     out, stream = [], _prf(original)
     for ch in original:
         if ch.isdigit():
-            out.append(str(stream % 10))
-            stream //= 10
-            if stream < 10:
-                stream = _prf(original, ch)
+            out.append(str(stream % 10)); stream //= 10
+            if stream < 10: stream = _prf(original, ch)
         else:
             out.append(ch)
     return "".join(out)
 
 
 def _fake_person(original: str) -> str:
-    """Nom factice cohérent : préserve le genre du prénom original."""
     seed = _prf(original)
     first_word = original.strip().split()[0].lower() if original.strip() else ""
-
     if first_word in _FEMALE_NAMES:
         pool = _FAKE_FEMALE
     elif first_word in _MALE_NAMES:
         pool = _FAKE_MALE
     else:
-        pool = _FAKE_MALE + _FAKE_FEMALE  # genre inconnu : déterministe quand même
-
+        pool = _FAKE_MALE + _FAKE_FEMALE
     return f"{pool[seed % len(pool)]} {_FAKE_LAST[(seed // 7) % len(_FAKE_LAST)]}"
 
 
-def tokenize(value: str, etype: EntityType) -> str:
-    """Remplace une valeur réelle par un substitut réaliste, faux, et
-    lui-même structurellement valide quand le format l'exige."""
+def _make_token(value: str, etype: EntityType) -> str:
     seed = _prf(value)
-
     if etype == EntityType.IBAN:
-        token = _fake_iban(value)
-    elif etype == EntityType.PERSON:
-        token = _fake_person(value)
-    elif etype == EntityType.EMAIL:
-        token = (f"{_FAKE_MALE[seed % len(_FAKE_MALE)].lower()}."
-                 f"{_FAKE_LAST[(seed // 3) % len(_FAKE_LAST)].lower()}@exemple.fr")
-    elif etype == EntityType.LOCATION:
-        token = _FAKE_CITIES[seed % len(_FAKE_CITIES)]
-    else:
-        token = _fake_digits(value)
+        return _fake_iban(value)
+    if etype == EntityType.PERSON:
+        return _fake_person(value)
+    if etype == EntityType.EMAIL:
+        return (f"{_FAKE_MALE[seed % len(_FAKE_MALE)].lower()}."
+                f"{_FAKE_LAST[(seed // 3) % len(_FAKE_LAST)].lower()}@exemple.fr")
+    if etype == EntityType.LOCATION:
+        return _FAKE_CITIES[seed % len(_FAKE_CITIES)]
+    return _fake_digits(value)
 
+
+# ----- API synchrone (repli mémoire) -----
+
+def tokenize(value: str, etype: EntityType) -> str:
+    token = _make_token(value, etype)
     _REVERSE_MAP[token] = (value, etype)
     return token
 
 
-def detokenize(text: str) -> str:
-    """Restaure les valeurs réelles dans la réponse de l'IA.
+# ----- API asynchrone (persistante chiffrée + TTL) -----
 
-    Trois niveaux de robustesse, car les LLM ne recopient pas
-    fidèlement les données structurées :
-    1. Remplacement exact du token.
-    2. Tolérance aux séparateurs (espaces/points/tirets insérés).
-    3. Récupération floue : le LLM a corrompu des caractères du token
-       (chiffres perdus, tronqué). On compare chaque candidat structuré
-       de la réponse aux tokens du vault par similarité."""
+async def tokenize_async(value: str, etype: EntityType) -> str:
+    token = _make_token(value, etype)
+    _REVERSE_MAP[token] = (value, etype)
+
+    if db.is_enabled():
+        try:
+            expires = datetime.now(timezone.utc) + timedelta(hours=settings.vault_ttl_hours)
+            async with db.pool().acquire() as con:
+                await con.execute(
+                    "INSERT INTO vault (token, cipher, entity_type, expires_at) "
+                    "VALUES ($1, $2, $3, $4) "
+                    "ON CONFLICT (token) DO UPDATE SET expires_at = EXCLUDED.expires_at",
+                    token, db.encrypt(value), etype.value, expires,
+                )
+        except Exception as e:
+            print(f"[SENTINEL] Écriture vault DB échouée : {type(e).__name__}: {e}")
+
+    return token
+
+
+async def _lookup(token: str) -> tuple[str, EntityType] | None:
+    """Cherche un token : cache mémoire d'abord, puis base (déchiffré)."""
+    if token in _REVERSE_MAP:
+        return _REVERSE_MAP[token]
+    if db.is_enabled():
+        try:
+            async with db.pool().acquire() as con:
+                row = await con.fetchrow(
+                    "SELECT cipher, entity_type FROM vault "
+                    "WHERE token = $1 AND expires_at > now()", token,
+                )
+            if row:
+                real = db.decrypt(row["cipher"])
+                if real is not None:
+                    return real, EntityType(row["entity_type"])
+        except Exception:
+            pass
+    return None
+
+
+async def detokenize_async(text: str) -> str:
+    """Désanonymise en interrogeant cache + base. Robuste aux
+    reformatages et corruptions du LLM (comme la version mémoire)."""
+    # On rassemble les tokens candidats : ceux du cache + repérage flou.
+    candidates: dict[str, tuple[str, EntityType]] = dict(_REVERSE_MAP)
+
     unmatched_structured: list[tuple[str, str]] = []
 
-    for token, (real, etype) in _REVERSE_MAP.items():
+    for token, (real, etype) in list(candidates.items()):
         if token in text:
             text = text.replace(token, real)
             continue
-
         if etype in _REFORMATTABLE:
             alnum = [re.escape(c) for c in token if c.isalnum()]
             if not alnum:
@@ -193,14 +203,13 @@ def detokenize(text: str) -> str:
             else:
                 unmatched_structured.append((token, real))
 
-    # --- Niveau 3 : récupération floue des tokens corrompus ---
     for token, real in unmatched_structured:
         token_n = _norm(token)
         best = None
         for m in _FUZZY_CANDIDATE.finditer(text):
             cand_n = _norm(m.group())
             if token_n[:2].isalpha() and cand_n[:2] != token_n[:2]:
-                continue  # pays différent : pas le même IBAN
+                continue
             ratio = SequenceMatcher(None, cand_n, token_n).ratio()
             if ratio >= _FUZZY_THRESHOLD and (best is None or ratio > best[0]):
                 best = (ratio, m.start(), m.end())
@@ -208,4 +217,19 @@ def detokenize(text: str) -> str:
             _, s, e = best
             text = text[:s] + real + text[e:]
 
+    return text
+
+
+# Compat : detokenize synchrone (cache mémoire seul)
+def detokenize(text: str) -> str:
+    for token, (real, etype) in _REVERSE_MAP.items():
+        if token in text:
+            text = text.replace(token, real)
+            continue
+        if etype in _REFORMATTABLE:
+            alnum = [re.escape(c) for c in token if c.isalnum()]
+            if not alnum:
+                continue
+            pattern = re.compile(r"[\s\u00A0.\-]{0,3}".join(alnum), re.IGNORECASE)
+            text = pattern.sub(real, text)
     return text
