@@ -12,7 +12,6 @@ from .. import db
 settings = get_settings()
 _KEY = bytes.fromhex(settings.vault_master_key)
 
-# Cache mémoire : token -> (valeur réelle, type). Toujours actif.
 _REVERSE_MAP: dict[str, tuple[str, EntityType]] = {}
 
 _FAKE_MALE = ["Marc", "Paul", "Hugo", "Louis", "Victor", "Simon", "Denis"]
@@ -57,8 +56,6 @@ def _prf(value: str, salt: str = "") -> int:
 def _norm(s: str) -> str:
     return re.sub(r"[\s\u00A0.\-]", "", s).upper()
 
-
-# ----- Génération des substituts (inchangée) -----
 
 def _fake_iban(original: str) -> str:
     stream = _prf(original)
@@ -130,20 +127,15 @@ def _make_token(value: str, etype: EntityType) -> str:
     return _fake_digits(value)
 
 
-# ----- API synchrone (repli mémoire) -----
-
 def tokenize(value: str, etype: EntityType) -> str:
     token = _make_token(value, etype)
     _REVERSE_MAP[token] = (value, etype)
     return token
 
 
-# ----- API asynchrone (persistante chiffrée + TTL) -----
-
 async def tokenize_async(value: str, etype: EntityType) -> str:
     token = _make_token(value, etype)
     _REVERSE_MAP[token] = (value, etype)
-
     if db.is_enabled():
         try:
             expires = datetime.now(timezone.utc) + timedelta(hours=settings.vault_ttl_hours)
@@ -156,34 +148,72 @@ async def tokenize_async(value: str, etype: EntityType) -> str:
                 )
         except Exception as e:
             print(f"[SENTINEL] Écriture vault DB échouée : {type(e).__name__}: {e}")
-
     return token
 
 
-async def _lookup(token: str) -> tuple[str, EntityType] | None:
-    """Cherche un token : cache mémoire d'abord, puis base (déchiffré)."""
-    if token in _REVERSE_MAP:
-        return _REVERSE_MAP[token]
-    if db.is_enabled():
-        try:
-            async with db.pool().acquire() as con:
-                row = await con.fetchrow(
-                    "SELECT cipher, entity_type FROM vault "
-                    "WHERE token = $1 AND expires_at > now()", token,
-                )
-            if row:
-                real = db.decrypt(row["cipher"])
-                if real is not None:
-                    return real, EntityType(row["entity_type"])
-        except Exception:
-            pass
-    return None
+def _fuzzy_restore(text: str, candidates: dict[str, tuple[str, EntityType]]) -> str:
+    """Récupération floue : restaure les tokens corrompus par le LLM.
+    Même logique que detokenize_async, factorisée pour être réutilisée
+    dans les deux versions (sync et async)."""
+    unmatched = [(tok, real) for tok, (real, etype) in candidates.items()
+                 if etype in _REFORMATTABLE and tok not in text]
+    for token, real in unmatched:
+        token_n = _norm(token)
+        best = None
+        for m in _FUZZY_CANDIDATE.finditer(text):
+            cand_n = _norm(m.group())
+            if token_n[:2].isalpha() and cand_n[:2] != token_n[:2]:
+                continue
+            ratio = SequenceMatcher(None, cand_n, token_n).ratio()
+            if ratio >= _FUZZY_THRESHOLD and (best is None or ratio > best[0]):
+                best = (ratio, m.start(), m.end())
+        if best:
+            _, s, e = best
+            text = text[:s] + real + text[e:]
+    return text
+
+
+def detokenize(text: str) -> str:
+    """Désanonymise. Trois niveaux : exact → séparateurs → fuzzy.
+    Version synchrone (cache mémoire). Utilisée partout sauf en prod
+    avec base de données (detokenize_async)."""
+    unmatched_structured: list[tuple[str, str]] = []
+
+    for token, (real, etype) in _REVERSE_MAP.items():
+        if token in text:
+            text = text.replace(token, real)
+            continue
+        if etype in _REFORMATTABLE:
+            alnum = [re.escape(c) for c in token if c.isalnum()]
+            if not alnum:
+                continue
+            pattern = re.compile(r"[\s\u00A0.\-]{0,3}".join(alnum), re.IGNORECASE)
+            new_text = pattern.sub(real, text)
+            if new_text != text:
+                text = new_text
+            else:
+                unmatched_structured.append((token, real))
+
+    # Niveau 3 : récupération floue (LLM qui corrompt les chiffres)
+    for token, real in unmatched_structured:
+        token_n = _norm(token)
+        best = None
+        for m in _FUZZY_CANDIDATE.finditer(text):
+            cand_n = _norm(m.group())
+            if token_n[:2].isalpha() and cand_n[:2] != token_n[:2]:
+                continue
+            ratio = SequenceMatcher(None, cand_n, token_n).ratio()
+            if ratio >= _FUZZY_THRESHOLD and (best is None or ratio > best[0]):
+                best = (ratio, m.start(), m.end())
+        if best:
+            _, s, e = best
+            text = text[:s] + real + text[e:]
+
+    return text
 
 
 async def detokenize_async(text: str) -> str:
-    """Désanonymise en interrogeant cache + base. Robuste aux
-    reformatages et corruptions du LLM (comme la version mémoire)."""
-    # On rassemble les tokens candidats : ceux du cache + repérage flou.
+    """Désanonymise en interrogeant cache + base."""
     candidates: dict[str, tuple[str, EntityType]] = dict(_REVERSE_MAP)
 
     unmatched_structured: list[tuple[str, str]] = []
@@ -217,19 +247,4 @@ async def detokenize_async(text: str) -> str:
             _, s, e = best
             text = text[:s] + real + text[e:]
 
-    return text
-
-
-# Compat : detokenize synchrone (cache mémoire seul)
-def detokenize(text: str) -> str:
-    for token, (real, etype) in _REVERSE_MAP.items():
-        if token in text:
-            text = text.replace(token, real)
-            continue
-        if etype in _REFORMATTABLE:
-            alnum = [re.escape(c) for c in token if c.isalnum()]
-            if not alnum:
-                continue
-            pattern = re.compile(r"[\s\u00A0.\-]{0,3}".join(alnum), re.IGNORECASE)
-            text = pattern.sub(real, text)
     return text
