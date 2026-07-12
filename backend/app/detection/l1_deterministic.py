@@ -21,8 +21,6 @@ IBAN_LENGTHS: dict[str, int] = {
     "VA": 22, "VG": 24, "XK": 20, "YE": 30,
 }
 
-# Candidat large : 2 lettres + 2 chiffres + 11 à 40 alphanum,
-# séparateurs tolérés (espace, espace insécable, tiret), casse ignorée.
 IBAN_CANDIDATE = re.compile(
     r"\b([A-Za-z]{2}\d{2}(?:[\s\u00A0-]?[A-Za-z0-9]){11,40})(?![A-Za-z0-9])"
 )
@@ -106,7 +104,39 @@ def _scan_ibans(text: str) -> list[Finding]:
     return findings
 
 
-# --- Autres motifs candidats (filtrés par validateur) ---
+# ============================================================
+# Patterns SECRETS — couverture étendue des formats modernes
+# ============================================================
+# Chaque motif gère les préfixes composés (sk-proj-, sk-ant-api03-)
+# où le tiret interne cassait l'ancien pattern générique.
+_SECRET_PATTERNS: list[re.Pattern] = [
+    # OpenAI : sk-, sk-proj-, sk-svcacct-, sk-admin-  (+ tirets internes)
+    re.compile(r"\bsk-(?:proj|svcacct|admin|None)?-?[A-Za-z0-9_\-]{16,}\b"),
+    # Anthropic : sk-ant-api03-..., sk-ant-admin01-...
+    re.compile(r"\bsk-ant-[a-z0-9]+-[A-Za-z0-9_\-]{16,}\b"),
+    # Groq
+    re.compile(r"\bgsk_[A-Za-z0-9]{20,}\b"),
+    # AWS access key
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    # GitHub : ghp_, gho_, ghs_, ghu_, ghr_, github_pat_
+    re.compile(r"\bgh[opsur]_[A-Za-z0-9]{30,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{30,}\b"),
+    # Slack
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{10,}\b"),
+    # Google API key
+    re.compile(r"\bAIza[A-Za-z0-9_\-]{35}\b"),
+    # Clé générique nommée : api_key=..., token: "..."
+    re.compile(
+        r"(?:api[_-]?key|access[_-]?token|secret[_-]?key|password)"
+        r"\s*[=:]\s*['\"]?([A-Za-z0-9_\-]{16,})['\"]?",
+        re.IGNORECASE,
+    ),
+]
+
+SIMPLE_PATTERNS: dict[EntityType, re.Pattern] = {
+    EntityType.EMAIL: re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),
+    EntityType.PHONE_FR: re.compile(r"\b(?:0|\+33[ ]?)[1-9](?:[ .-]?\d{2}){4}\b"),
+}
 
 PATTERNS: dict[EntityType, tuple[re.Pattern, callable]] = {
     EntityType.CARD: (re.compile(r"\b(?:\d[ -]?){13,19}\b"), luhn_valid),
@@ -114,21 +144,38 @@ PATTERNS: dict[EntityType, tuple[re.Pattern, callable]] = {
     EntityType.SIRET: (re.compile(r"\b\d{3}[ ]?\d{3}[ ]?\d{3}[ ]?\d{5}\b"), siret_valid),
 }
 
-SIMPLE_PATTERNS: dict[EntityType, re.Pattern] = {
-    EntityType.EMAIL: re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),
-    EntityType.PHONE_FR: re.compile(r"\b(?:0|\+33[ ]?)[1-9](?:[ .-]?\d{2}){4}\b"),
-    EntityType.SECRET: re.compile(
-        r"\b(?:sk-[A-Za-z0-9]{20,}|gsk_[A-Za-z0-9]{20,}|"
-        r"AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|xox[baprs]-[A-Za-z0-9-]{10,})\b"
-    ),
-}
+
+def _scan_secrets(text: str) -> list[Finding]:
+    """Détecte les secrets via tous les motifs, en évitant les doublons
+    de position (plusieurs motifs peuvent matcher le même secret)."""
+    findings: list[Finding] = []
+    seen_spans: set[tuple[int, int]] = set()
+    for pattern in _SECRET_PATTERNS:
+        for m in pattern.finditer(text):
+            # Si le motif a un groupe de capture (clé générique), on cible le groupe
+            span_start = m.start(1) if m.lastindex else m.start()
+            span_end = m.end(1) if m.lastindex else m.end()
+            value = m.group(1) if m.lastindex else m.group()
+            key = (span_start, span_end)
+            if key in seen_spans:
+                continue
+            # Évite un chevauchement partiel avec un secret déjà trouvé
+            if any(span_start < e and span_end > s for s, e in seen_spans):
+                continue
+            seen_spans.add(key)
+            findings.append(Finding(
+                entity_type=EntityType.SECRET,
+                start=span_start, end=span_end,
+                value=value, confidence=0.98, layer="L1",
+                meta={"kind": "secret"},
+            ))
+    return findings
 
 
 def scan(text: str) -> list[Finding]:
     findings: list[Finding] = list(_scan_ibans(text))
+    findings.extend(_scan_secrets(text))
 
-    # Positions déjà couvertes par un IBAN : évite qu'une carte "matche"
-    # les chiffres internes d'un IBAN (chevauchement de motifs).
     covered = [(f.start, f.end) for f in findings]
 
     def overlaps(s: int, e: int) -> bool:
@@ -142,6 +189,7 @@ def scan(text: str) -> list[Finding]:
                     value=m.group(), confidence=1.0, layer="L1",
                     meta={"validated": True},
                 ))
+                covered.append((m.start(), m.end()))
 
     for etype, pattern in SIMPLE_PATTERNS.items():
         for m in pattern.finditer(text):
@@ -150,5 +198,6 @@ def scan(text: str) -> list[Finding]:
                     entity_type=etype, start=m.start(), end=m.end(),
                     value=m.group(), confidence=0.98, layer="L1",
                 ))
+                covered.append((m.start(), m.end()))
 
     return findings

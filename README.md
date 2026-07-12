@@ -7,7 +7,7 @@
 *Inspecte chaque prompt sortant. Protège les données sensibles. Prouve la conformité.*
 
 [![Tests](https://img.shields.io/badge/tests-69%20passed-brightgreen)](https://github.com/DD542/sentinel)
-[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Coverage](https://img.shields.io/badge/coverage-84%25%20core%20logic-green)](https://github.com/DD542/sentinel)[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white)](https://vuejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)

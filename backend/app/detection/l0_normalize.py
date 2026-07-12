@@ -4,25 +4,13 @@ import binascii
 import re
 from dataclasses import dataclass
 
-# ============================================================
-# Couche L0 — Dé-obfuscation défensive.
-# Objectif : révéler les données dissimulées AVANT que les couches
-# de détection ne s'appliquent. On ne prétend PAS à l'exhaustivité :
-# le chiffrement fort, la stéganographie et les langues non couvertes
-# restent hors de portée. Le but est de relever la barre, pas de
-# garantir l'imperméabilité.
-# ============================================================
-
 
 @dataclass
 class NormalizedView:
-    """Une variante dé-obfusquée du texte, avec sa provenance."""
     text: str
-    technique: str   # "base64" | "hex" | "despaced" | "raw"
+    technique: str
 
 
-# --- Détection d'ingénierie sociale contre la passerelle ---
-# Ces motifs ne bloquent pas l'IA : ils lèvent un drapeau d'audit.
 _EVASION_PATTERNS = [
     re.compile(r"\bignore[a-z\s]{0,20}(les\s+)?(r[eè]gles|instructions|consignes)\b", re.I),
     re.compile(r"\bd[eé]sactive[a-z\s]{0,20}(la\s+)?(protection|s[eé]curit[eé]|filtre)\b", re.I),
@@ -31,12 +19,11 @@ _EVASION_PATTERNS = [
     re.compile(r"\bne\s+(scanne|filtre|bloque|analyse)\s+pas\b", re.I),
 ]
 
-_B64_CANDIDATE = re.compile(r"\b[A-Za-z0-9+/]{16,}={0,2}\b")
+_B64_CANDIDATE = re.compile(r"\b[A-Za-z0-9+/]{16,}={0,2}")
 _HEX_CANDIDATE = re.compile(r"\b(?:[0-9a-fA-F]{2}[\s:]?){8,}\b")
 
 
 def detect_evasion(text: str) -> list[str]:
-    """Renvoie les tentatives de contournement repérées (pour l'audit)."""
     hits = []
     for pat in _EVASION_PATTERNS:
         if pat.search(text):
@@ -45,20 +32,25 @@ def detect_evasion(text: str) -> list[str]:
 
 
 def _try_base64(text: str) -> list[str]:
-    """Décode les blocs base64 plausibles ; ignore le bruit."""
+    """Décode les blocs base64 plausibles. On essaie plusieurs longueurs
+    de padding car le \\b de la regex peut couper le = final."""
     out = []
     for m in _B64_CANDIDATE.finditer(text):
-        chunk = m.group()
-        if len(chunk) % 4 != 0:
-            continue
-        try:
-            decoded = base64.b64decode(chunk, validate=True)
-            txt = decoded.decode("utf-8", errors="strict")
-            # On ne garde que du texte imprimable et significatif
-            if len(txt) >= 6 and sum(c.isprintable() for c in txt) / len(txt) > 0.9:
-                out.append(txt)
-        except (binascii.Error, ValueError, UnicodeDecodeError):
-            continue
+        chunk = m.group().rstrip("=")
+        # On tente d'ajouter le padding manquant (0 à 2 signes =)
+        for pad in range(3):
+            candidate = chunk + "=" * pad
+            if len(candidate) % 4 != 0:
+                continue
+            try:
+                decoded = base64.b64decode(candidate, validate=True)
+                txt = decoded.decode("utf-8", errors="strict")
+                txt = txt.strip().strip("\r\n\x00")
+                if len(txt) >= 6 and sum(c.isprintable() for c in txt) / len(txt) > 0.9:
+                    out.append(txt)
+                    break
+            except (binascii.Error, ValueError, UnicodeDecodeError):
+                continue
     return out
 
 
@@ -78,21 +70,13 @@ def _try_hex(text: str) -> list[str]:
 
 
 def _despace(text: str) -> str:
-    """Réduit les espacements excessifs entre caractères alphanumériques.
-    'F R 7 6 1 0' -> 'FR7610', 's k - a b c' -> 'sk-abc'.
-    On ne touche qu'aux séquences suspectes (lettres/chiffres isolés
-    séparés par un seul espace/point/tiret), pas au texte normal."""
-    # Séquences de type "X X X X" (caractères seuls espacés) : on recolle.
     def collapse(m):
         return re.sub(r"[\s.\-]", "", m.group())
-    # Au moins 5 unités "caractère + séparateur"
     pattern = re.compile(r"(?:[A-Za-z0-9][\s.\-]){4,}[A-Za-z0-9]")
     return pattern.sub(collapse, text)
 
 
 def normalized_views(text: str) -> list[NormalizedView]:
-    """Produit toutes les variantes à scanner : l'original + ses
-    versions dé-obfusquées. Les couches L1-L4 tourneront sur chacune."""
     views = [NormalizedView(text, "raw")]
 
     despaced = _despace(text)
