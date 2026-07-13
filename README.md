@@ -6,11 +6,12 @@
 
 *Inspecte chaque prompt sortant. Protège les données sensibles. Prouve la conformité.*
 
+[![CI](https://github.com/DD542/sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/DD542/sentinel/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-93%20passed-brightgreen)](https://github.com/DD542/sentinel)
+[![Benchmark](https://img.shields.io/badge/detection%20F1-100%25-brightgreen)](https://github.com/DD542/sentinel)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white)](https://vuejs.org/)
-[![Tests](https://img.shields.io/badge/tests-69%20passed-brightgreen)](https://github.com/DD542/sentinel)
-[![Benchmark](https://img.shields.io/badge/detection%20F1-100%25-brightgreen)](https://github.com/DD542/sentinel)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 [Français](#-français) · [English](#-english)
@@ -62,9 +63,9 @@ Benchmark sur **89 prompts étiquetés** (`backend/tests/benchmark.py`) :
 | **Global** | **100 %** | **100 %** | **100 %** |
 
 **42 prompts innocents traités sans aucun faux positif.** Latence moyenne : ~100 ms/prompt.
-Suite de tests : **69 tests unitaires et d'intégration, tous verts.**
+Suite de tests : **93 tests unitaires, d'intégration et d'API, tous verts.**
 
-> Ces chiffres portent sur le jeu de test fourni, qui couvre les formats structurés, l'obfuscation (base64, hexadécimal, espacement) et les tentatives d'évasion. Ils ne constituent pas une garantie de détection exhaustive — voir [Limites connues](#-limites-connues).
+> Ces chiffres portent sur le jeu de test fourni, qui couvre les formats structurés, l'obfuscation (base64, hexadécimal, espacement) et les tentatives d'évasion. Ils ne constituent pas une garantie de détection exhaustive — voir [Limites connues](#limites-connues).
 
 ### Ce que fait SENTINEL
 
@@ -88,7 +89,7 @@ Suite de tests : **69 tests unitaires et d'intégration, tous verts.**
 
 Supervision live via WebSocket : prompts analysés, données anonymisées, secrets bloqués, fuites IP interceptées. Flux des décisions avec hash d'audit, répartition par type de donnée, registre Shadow AI, état de la chaîne d'audit.
 
-> **Capture d'écran à insérer.** Place ton image dans `docs/dashboard.png` puis référence-la :
+> **Capture d'écran à insérer.** Place ton image dans `docs/dashboard.png` puis remplace ce bloc par :
 > `![Dashboard SENTINEL](docs/dashboard.png)`
 
 ### Stack technique
@@ -102,7 +103,7 @@ Supervision live via WebSocket : prompts analysés, données anonymisées, secre
 | Persistance | Postgres (Neon) + repli mémoire automatique |
 | Frontend | Vue 3, Vite, WebSocket natif, zéro dépendance graphique |
 | Fournisseurs IA | Anthropic, OpenAI, Groq |
-| Tests | pytest, pytest-asyncio, pytest-cov |
+| Tests & CI | pytest, pytest-asyncio, pytest-cov, GitHub Actions |
 
 ### Démarrage rapide
 
@@ -116,6 +117,7 @@ python -m venv .venv
 
 pip install -e .
 pip install -e ".[detection]"     # Presidio + spaCy (recommandé)
+pip install -e ".[dev]"           # pytest, coverage
 python -m spacy download fr_core_news_lg
 ```
 
@@ -202,12 +204,16 @@ Le fournisseur reçoit `Hugo Blanc` et un IBAN factice valide. L'employé reçoi
 ```bash
 cd backend
 
-pytest tests/ -v                                    # 69 tests
+pytest tests/ -v                                    # 93 tests
 pytest tests/ --cov=app --cov-report=term-missing   # couverture
 python tests/benchmark.py                           # métriques de détection
 python tests/benchmark.py --verbose                 # détail par cas
 python tests/benchmark.py --json                    # sortie machine (CI)
 ```
+
+Répartition des tests : détection L0/L1 (22), vault FPE (16), chaîne d'audit (9), intégration moteur (9), **API FastAPI (24)**, normalisation L0 (13).
+
+La CI GitHub Actions rejoue l'intégralité des tests et du benchmark sur Python 3.11 et 3.12 à chaque push.
 
 ### Limites connues
 
@@ -225,13 +231,28 @@ Ces limites sont documentées **parce qu'elles existent dans toutes les solution
 
 ### Feuille de route
 
+**Terminé**
+
+- [x] Moteur de détection 5 couches (L0 dé-obfuscation → L4 juge local)
+- [x] Vault FPE : tokenisation à format préservé, genre cohérent, IBAN factice valide
+- [x] Désanonymisation 3 niveaux (exact, séparateurs, récupération floue)
+- [x] Détection de fuite de propriété intellectuelle (shingles + embeddings)
+- [x] Journal d'audit hash-chained + crypto-shredding RGPD
+- [x] Authentification multi-clients (clés hachées, mode bootstrap)
+- [x] Dashboard temps réel Vue 3 + WebSocket
+- [x] Registre Shadow AI (souveraineté des fournisseurs)
+- [x] Persistance Postgres (repli mémoire automatique)
+- [x] Suite de tests : 93 tests, dont 24 tests d'intégration API (TestClient FastAPI)
+- [x] Benchmark de détection chiffré (précision / rappel / F1)
+- [x] CI GitHub Actions (tests + benchmark sur Python 3.11 et 3.12)
+
+**À venir**
+
 - [ ] Support du streaming (désanonymisation incrémentale)
 - [ ] Détection multilingue (EN, ES, DE)
-- [ ] Rate-limiting et révocation de clés
-- [ ] Authentification du dashboard
-- [ ] Tests d'intégration API (TestClient FastAPI)
+- [ ] Rate-limiting par clé et endpoint de révocation
+- [ ] Authentification du dashboard et du WebSocket
 - [ ] Pilier 2 — **Audit AI Act** : agents RAG sur le texte réglementaire, classification de risque, rapport de conformité
-- [ ] CI GitHub Actions (tests + benchmark à chaque push)
 
 ### Licence
 
@@ -282,7 +303,7 @@ Benchmark over **89 labelled prompts** (`backend/tests/benchmark.py`):
 | **Overall** | **100%** | **100%** | **100%** |
 
 **42 innocent prompts processed with zero false positives.** Average latency: ~100 ms/prompt.
-Test suite: **69 unit and integration tests, all green.**
+Test suite: **93 unit, integration and API tests, all green.**
 
 > These figures cover the provided test set (structured formats, base64/hex/spacing obfuscation, evasion attempts). They are not a guarantee of exhaustive detection — see [Known limitations](#known-limitations).
 
@@ -316,6 +337,7 @@ source .venv/bin/activate         # Linux / macOS
 
 pip install -e .
 pip install -e ".[detection]"
+pip install -e ".[dev]"
 python -m spacy download fr_core_news_lg
 ```
 
@@ -342,9 +364,11 @@ cd ../frontend && npm install && npm run dev    # dashboard
 
 ```bash
 cd backend
-pytest tests/ -v
-python tests/benchmark.py
+pytest tests/ -v              # 93 tests
+python tests/benchmark.py     # detection metrics
 ```
+
+CI runs the full test suite and benchmark on Python 3.11 and 3.12 on every push.
 
 ### Known limitations
 
@@ -361,13 +385,28 @@ These limitations are documented **because they exist in every solution on the m
 
 ### Roadmap
 
+**Done**
+
+- [x] 5-layer detection engine (L0 de-obfuscation → L4 local judge)
+- [x] FPE vault: format-preserving tokenisation, gender consistency, valid fake IBAN
+- [x] 3-level detokenisation (exact, separator-tolerant, fuzzy recovery)
+- [x] IP leak detection (shingles + embeddings)
+- [x] Hash-chained audit log + GDPR crypto-shredding
+- [x] Multi-tenant authentication (hashed keys, bootstrap mode)
+- [x] Real-time Vue 3 + WebSocket dashboard
+- [x] Shadow AI registry (provider sovereignty)
+- [x] Postgres persistence (automatic memory fallback)
+- [x] Test suite: 93 tests, including 24 API integration tests (FastAPI TestClient)
+- [x] Quantified detection benchmark (precision / recall / F1)
+- [x] GitHub Actions CI (tests + benchmark on Python 3.11 and 3.12)
+
+**Next**
+
 - [ ] Streaming support (incremental detokenisation)
 - [ ] Multilingual detection (EN, ES, DE)
-- [ ] Rate limiting and key revocation
-- [ ] Dashboard authentication
-- [ ] API integration tests (FastAPI TestClient)
+- [ ] Per-key rate limiting and revocation endpoint
+- [ ] Dashboard and WebSocket authentication
 - [ ] Pillar 2 — **AI Act audit**: RAG agents over the regulation, risk classification, compliance reporting
-- [ ] GitHub Actions CI (tests + benchmark on every push)
 
 ### License
 
