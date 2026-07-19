@@ -14,7 +14,11 @@ PRESIDIO_MAP: dict[str, EntityType] = {
     "IBAN_CODE": EntityType.IBAN,
 }
 
-_SENTENCE_ENDINGS = ".!?:;\n"
+# ':' et ';' exclus volontairement : apres un deux-points (format
+# formulaire, "Nom: Dupont"), un mot capitalise est plus probablement
+# un nom de personne qu'un verbe de debut de phrase. Constat issu du
+# benchmark externe ai4privacy (texte type formulaire).
+_SENTENCE_ENDINGS = ".!?\n"
 
 
 def _build_analyzer():

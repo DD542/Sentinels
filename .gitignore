@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Donnees de benchmark externe (telechargees, tierces - ne pas versionner)
+backend/tests/data/

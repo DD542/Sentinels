@@ -74,6 +74,26 @@ Suite de tests : **123 tests unitaires, d'intégration et d'API, tous verts** en
 
 > Ces chiffres portent sur le jeu de test fourni, qui couvre les formats structurés, l'obfuscation (base64, hexadécimal, espacement) et les tentatives d'évasion. Ils ne constituent pas une garantie de détection exhaustive — voir [Limites connues](#limites-connues).
 
+#### Benchmark externe (données tierces)
+
+Pour éviter l'auto-évaluation complaisante, SENTINEL est aussi mesuré sur un jeu public que nous n'avons pas écrit : [ai4privacy/pii-masking-300k](https://huggingface.co/datasets/ai4privacy/pii-masking-300k), sous-ensemble **français** (300 lignes du split validation, annotées en spans, texte bruité type formulaire). Baseline : Presidio brut (`AnalyzerEngine` fr) sur les mêmes lignes.
+
+| Type | SENTINEL P / R / F1 | Presidio brut P / R / F1 | Spans |
+|:---|:---:|:---:|:---:|
+| EMAIL | 93,0 / 99,2 / **96,0 %** | 93,8 / 100 / 96,8 % | 121 |
+| PERSON | 33,8 / 34,3 / **34,0 %** | 31,6 / 41,4 / 35,9 % | 210 |
+| PHONE_FR | 38,5 / 39,2 / **38,8 %** | 39,6 / 41,2 / 40,4 % | 51 |
+| **Micro** | 53,3 / 40,0 / **45,7 %** | 50,1 / 43,2 / 46,4 % | 530 |
+
+Lecture honnête : sur du texte tiers bruité, la NER française plafonne — pour SENTINEL comme pour la baseline (dont SENTINEL enrichit sa couche L2). SENTINEL échange un peu de rappel contre de la précision (garde-fous anti-faux-positifs) et apporte tout ce que la baseline n'a pas : validation par somme de contrôle, secrets, dé-obfuscation, tokenisation FPE, audit. Les 148 numéros de sécurité sociale du jeu sont synthétiques et **tous invalides selon la clé de contrôle NIR (0/148)** : SENTINEL valide cette clé précisément pour éliminer les faux positifs — mesure non significative, exclue du tableau. Latence : ~61 ms/ligne.
+
+Ce benchmark a déjà payé : il a révélé qu'un garde-fou supprimait à tort les noms en format formulaire (« Nom: Dupont ») — corrigé, sans introduire un seul faux positif sur le jeu interne.
+
+```bash
+python tests/benchmark_external.py            # télécharge et met en cache l'échantillon
+python tests/benchmark_external.py --rows 1000 --json
+```
+
 ### Fonctionnalités
 
 **Détection en profondeur (5 couches).** Chaque couche dégrade proprement si indisponible. Un IBAN est validé par registre SWIFT *et* clé mod-97, une carte par Luhn, un NIR par sa clé de contrôle. Les noms passent par Presidio avec des garde-fous anti-faux-positifs (un verbe capitalisé en début de phrase n'est pas un prénom).
@@ -238,7 +258,8 @@ cd backend
 
 pytest tests/ -v                                    # 123 tests
 pytest tests/ --cov=app --cov-report=term-missing   # couverture
-python tests/benchmark.py                           # métriques de détection
+python tests/benchmark.py                           # métriques de détection (jeu interne)
+python tests/benchmark_external.py                  # benchmark externe (ai4privacy FR)
 python tests/benchmark.py --verbose                 # détail par cas
 python tests/benchmark.py --json                    # sortie machine (CI)
 ```
@@ -280,9 +301,10 @@ Ces limites sont documentées **parce qu'elles existent dans toutes les solution
 - [x] Authentification du dashboard et du WebSocket (`DASHBOARD_TOKEN`, sous-protocole WS, écran de connexion)
 - [x] Isolation multi-tenant du corpus L3 (le corpus d'un client n'influence jamais les scans d'un autre)
 - [x] Benchmark de détection chiffré (précision / rappel / F1)
+- [x] Benchmark externe sur données tierces (ai4privacy FR, baseline Presidio, spans exacts)
 - [x] CI GitHub Actions (tests + benchmark sur Python 3.11 et 3.12)
 
-**🔜 À venir**
+** À venir**
 
 - [ ] Streaming natif du fournisseur (désanonymisation incrémentale)
 - [ ] Détection multilingue (EN, ES, DE)
@@ -326,6 +348,25 @@ Benchmark over **89 labelled prompts** (`backend/tests/benchmark.py`):
 Test suite: **123 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
 
 > These figures cover the provided test set (structured formats, base64/hex/spacing obfuscation, evasion attempts). They are not a guarantee of exhaustive detection — see [Known limitations](#known-limitations).
+
+#### External benchmark (third-party data)
+
+To avoid grading our own homework, SENTINEL is also measured on a public dataset we did not write: [ai4privacy/pii-masking-300k](https://huggingface.co/datasets/ai4privacy/pii-masking-300k), **French** subset (300 validation rows, span-annotated, noisy form-like text). Baseline: raw Presidio (`AnalyzerEngine` fr) on the same rows.
+
+| Type | SENTINEL P / R / F1 | Raw Presidio P / R / F1 | Spans |
+|:---|:---:|:---:|:---:|
+| EMAIL | 93.0 / 99.2 / **96.0%** | 93.8 / 100 / 96.8% | 121 |
+| PERSON | 33.8 / 34.3 / **34.0%** | 31.6 / 41.4 / 35.9% | 210 |
+| PHONE_FR | 38.5 / 39.2 / **38.8%** | 39.6 / 41.2 / 40.4% | 51 |
+| **Micro** | 53.3 / 40.0 / **45.7%** | 50.1 / 43.2 / 46.4% | 530 |
+
+Honest reading: on noisy third-party text, French NER hits a ceiling — for SENTINEL and for the baseline alike (SENTINEL builds its L2 layer on top of it). SENTINEL trades a little recall for precision (anti-false-positive guardrails) and adds everything the baseline lacks: checksum validation, secrets, de-obfuscation, FPE tokenisation, audit. The dataset's 148 social security numbers are synthetic and **all fail the French NIR control key (0/148)**: SENTINEL validates that key precisely to eliminate false positives — not a meaningful measure, excluded from the table. Latency: ~61 ms/row.
+
+This benchmark already paid off: it exposed a guardrail that wrongly suppressed form-style names ("Nom: Dupont") — fixed, with zero new false positives on the internal set.
+
+```bash
+python tests/benchmark_external.py            # downloads and caches the sample
+```
 
 ### Key features
 
@@ -422,7 +463,8 @@ cd ../frontend && npm install && npm run dev    # dashboard
 ```bash
 cd backend
 pytest tests/ -v              # 123 tests
-python tests/benchmark.py     # detection metrics
+python tests/benchmark.py     # detection metrics (internal set)
+python tests/benchmark_external.py   # external benchmark (ai4privacy FR)
 ```
 
 CI runs the full test suite and benchmark on Python 3.11 and 3.12 on every push.
@@ -459,6 +501,7 @@ These limitations are documented **because they exist in every solution on the m
 - [x] Dashboard and WebSocket authentication (`DASHBOARD_TOKEN`, WS subprotocol, login screen)
 - [x] Multi-tenant isolation of the L3 corpus (one client's corpus never affects another's scans)
 - [x] Quantified detection benchmark (precision / recall / F1)
+- [x] External benchmark on third-party data (ai4privacy FR, Presidio baseline, exact spans)
 - [x] GitHub Actions CI (tests + benchmark on Python 3.11 and 3.12)
 
 ** Next**
