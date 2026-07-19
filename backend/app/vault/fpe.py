@@ -147,7 +147,11 @@ async def tokenize_async(value: str, etype: EntityType) -> str:
                     token, db.encrypt(value), etype.value, expires,
                 )
         except Exception as e:
-            print(f"[SENTINEL] Écriture vault DB échouée : {type(e).__name__}: {e}")
+            from .. import logs
+            logs.get_logger("vault").warning(
+                "ecriture vault DB echouee",
+                extra={"event": "db_error", "op": "insert_token",
+                       "error": f"{type(e).__name__}: {e}"})
     return token
 
 

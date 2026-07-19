@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     # Token du dashboard (API stats + WebSocket temps réel).
     # Vide = accès libre (dev/démo) ; défini = obligatoire.
     dashboard_token: str = ""
+    # Format des logs : "json" (production, une ligne JSON par événement)
+    # ou "text" (lisible, dev local).
+    log_format: str = "json"
     # Détection
     l3_similarity_threshold: float = 0.86
     l3_simhash_max_distance: int = 3

@@ -32,7 +32,11 @@ def check(client_id: str) -> None:
 
     if len(window) >= limit:
         from . import metrics
+        from . import logs
         metrics.RATE_LIMITED.inc()
+        logs.get_logger("ratelimit").warning(
+            "quota depasse", extra={"event": "rate_limited",
+                                    "client_id": client_id, "limit": limit})
         retry_after = max(1, int(_WINDOW_SECONDS - (now - window[0])) + 1)
         raise HTTPException(
             status_code=429,

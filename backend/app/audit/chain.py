@@ -6,8 +6,10 @@ import time
 
 from ..config import get_settings
 from .. import db
+from .. import logs
 
 settings = get_settings()
+_log = logs.get_logger("audit")
 _HMAC_KEY = bytes.fromhex(settings.audit_hmac_key)
 _GENESIS = "0" * 64
 
@@ -83,7 +85,9 @@ async def load_from_db() -> None:
         for r in rows:
             _CHAIN.append(dict(r))
     except Exception as e:
-        print(f"[SENTINEL] Rechargement audit impossible : {type(e).__name__}: {e}")
+        _log.warning("rechargement audit impossible", extra={
+            "event": "db_error", "op": "load_chain",
+            "error": f"{type(e).__name__}: {e}"})
 
 
 async def append_async(action: str, entity_type: str, entity_id: str,
@@ -104,7 +108,9 @@ async def append_async(action: str, entity_type: str, entity_id: str,
                     entry["hash"],
                 )
         except Exception as e:
-            print(f"[SENTINEL] Écriture audit DB échouée : {type(e).__name__}: {e}")
+            _log.warning("ecriture audit DB echouee", extra={
+                "event": "db_error", "op": "append_chain",
+                "error": f"{type(e).__name__}: {e}"})
 
     return entry
 

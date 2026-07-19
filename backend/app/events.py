@@ -4,6 +4,9 @@ import time
 from collections import deque
 
 from . import metrics
+from . import logs
+
+_log = logs.get_logger("events")
 
 # Historique récent en mémoire (démo ; prod : Postgres + Redis pub/sub)
 _HISTORY: deque[dict] = deque(maxlen=200)
@@ -20,6 +23,27 @@ _STATS = {
 }
 
 
+def _log_event(event: dict) -> None:
+    """Une ligne de log structuree par evenement metier. Jamais la valeur
+    detectee : uniquement le type, l'action et le hash d'audit."""
+    kind = event.get("kind")
+    if kind == "decision":
+        _log.info("decision", extra={
+            "event": "decision",
+            "action": event.get("action"),
+            "entity_type": event.get("entity_type"),
+            "layer": event.get("layer"),
+            "confidence": event.get("confidence"),
+            "audit_hash": event.get("audit_hash"),
+        })
+    elif kind == "provider":
+        _log.info("appel fournisseur", extra={
+            "event": "provider_call", "provider": event.get("provider")})
+    elif kind == "scan":
+        _log.info("prompt analyse", extra={
+            "event": "scan", "length": event.get("length")})
+
+
 def _register_type(entity_type: str) -> None:
     _STATS["by_type"][entity_type] = _STATS["by_type"].get(entity_type, 0) + 1
 
@@ -33,6 +57,7 @@ async def publish(event: dict) -> None:
     event = {"ts": time.time(), **event}
     _HISTORY.appendleft(event)
     metrics.record_event(event)
+    _log_event(event)
 
     kind = event.get("kind")
     if kind == "scan":

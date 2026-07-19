@@ -20,12 +20,14 @@ from . import events
 from . import db
 from . import auth
 from . import metrics
+from . import logs
 
 settings = get_settings()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logs.configure()
     await db.init_db()
     await auth.load_keys_from_db()
     await chain.load_from_db()

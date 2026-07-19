@@ -8,8 +8,10 @@ from fastapi import Header, HTTPException
 from .config import get_settings
 from . import db
 from . import ratelimit
+from . import logs
 
 settings = get_settings()
+_log = logs.get_logger("auth")
 
 # Cache mémoire : hash_de_cle -> {client_id, active, created_at}
 # Toujours actif ; source de verite si pas de DB.
@@ -56,7 +58,9 @@ async def generate_key_async(client_id: str) -> str:
                     key_hash, client_id, now,
                 )
         except Exception as e:
-            print(f"[SENTINEL] Ecriture cle DB echouee : {type(e).__name__}: {e}")
+            _log.warning("ecriture cle DB echouee", extra={
+                "event": "db_error", "op": "insert_key",
+                "error": f"{type(e).__name__}: {e}"})
 
     return raw_key
 
@@ -163,7 +167,9 @@ async def revoke_client(client_id: str) -> int:
                     client_id,
                 )
         except Exception as e:
-            print(f"[SENTINEL] Revocation DB echouee : {type(e).__name__}: {e}")
+            _log.warning("revocation DB echouee", extra={
+                "event": "db_error", "op": "revoke_client",
+                "error": f"{type(e).__name__}: {e}"})
     return count
 
 
@@ -188,4 +194,6 @@ async def load_keys_from_db() -> None:
             _KEYS[r["key_hash"]] = {"client_id": r["client_id"],
                                     "active": r["active"], "created_at": None}
     except Exception as e:
-        print(f"[SENTINEL] Chargement cles impossible : {type(e).__name__}: {e}")
+        _log.warning("chargement cles impossible", extra={
+            "event": "db_error", "op": "load_keys",
+            "error": f"{type(e).__name__}: {e}"})

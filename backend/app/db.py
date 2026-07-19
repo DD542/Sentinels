@@ -69,7 +69,11 @@ async def init_db() -> None:
     except Exception as e:
         # Connexion impossible : on reste en repli mémoire plutôt que crasher.
         _pool = None
-        print(f"[SENTINEL] Persistance désactivée (repli mémoire) : {type(e).__name__}: {e}")
+        from . import logs
+        logs.get_logger("db").warning(
+            "persistance desactivee (repli memoire)",
+            extra={"event": "db_error", "op": "init_db",
+                   "error": f"{type(e).__name__}: {e}"})
 
 
 async def close_db() -> None:
