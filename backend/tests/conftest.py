@@ -9,10 +9,15 @@ def reset_vault():
     from app.vault import fpe
     from app.audit import chain
     from app import ratelimit
+    from app.detection import l3_semantic
     fpe._REVERSE_MAP.clear()
     chain._CHAIN.clear()
     ratelimit._WINDOWS.clear()
+    l3_semantic._SHINGLE_INDEX.clear()
+    l3_semantic._DOC_CHUNKS.clear()
     yield
     fpe._REVERSE_MAP.clear()
     chain._CHAIN.clear()
     ratelimit._WINDOWS.clear()
+    l3_semantic._SHINGLE_INDEX.clear()
+    l3_semantic._DOC_CHUNKS.clear()

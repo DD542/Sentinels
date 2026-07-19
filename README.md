@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/DD542/sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/DD542/sentinel/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-119%20passed-brightgreen)](https://github.com/DD542/sentinel)
+[![Tests](https://img.shields.io/badge/tests-123%20passed-brightgreen)](https://github.com/DD542/sentinel)
 [![Benchmark](https://img.shields.io/badge/detection%20F1-100%25-brightgreen)](https://github.com/DD542/sentinel)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -70,7 +70,7 @@ Benchmark sur **89 prompts étiquetés** (`backend/tests/benchmark.py`) :
 | **Global** | **100 %** | **100 %** | **100 %** |
 
 **42 prompts innocents traités sans aucun faux positif.** Latence moyenne : ~100 ms/prompt.
-Suite de tests : **119 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
+Suite de tests : **123 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
 
 > Ces chiffres portent sur le jeu de test fourni, qui couvre les formats structurés, l'obfuscation (base64, hexadécimal, espacement) et les tentatives d'évasion. Ils ne constituent pas une garantie de détection exhaustive — voir [Limites connues](#limites-connues).
 
@@ -84,7 +84,7 @@ Suite de tests : **119 tests unitaires, d'intégration et d'API, tous verts** en
 
 **Anti-contournement.** Les données dissimulées en base64, en hexadécimal ou par espacement excessif sont révélées puis neutralisées. Les tentatives d'ingénierie sociale contre la passerelle (« ignore les règles de sécurité ») lèvent un **drapeau d'audit** — le RSSI sait qui essaie de contourner l'outil.
 
-**Détection de fuite de propriété intellectuelle.** Les documents confidentiels de l'entreprise sont ingérés et indexés (shingles + embeddings optionnels). Si un employé colle un extrait d'un contrat interne, la requête est **bloquée entièrement** — pas de tokenisation partielle.
+**Détection de fuite de propriété intellectuelle.** Les documents confidentiels de l'entreprise sont ingérés et indexés (shingles + embeddings optionnels), **cloisonnés par client** : le corpus d'un tenant n'influence jamais les scans d'un autre. Si un employé colle un extrait d'un contrat interne, la requête est **bloquée entièrement** — pas de tokenisation partielle.
 
 **Journal d'audit inviolable.** Chaque décision est scellée par HMAC-SHA256 chaîné à l'entrée précédente. Toute altération casse la chaîne et est détectée. Les données sensibles du journal sont chiffrées par clé dérivée par entité — effacer une entité (RGPD, droit à l'oubli) revient à **détruire sa clé** : *crypto-shredding*.
 
@@ -223,7 +223,7 @@ Le fournisseur reçoit `Hugo Blanc` et un IBAN factice valide. L'employé reçoi
 | `/admin/keys` | POST | token admin | Créer une clé client |
 | `/admin/keys/revoke` | POST | token admin | Révoquer toutes les clés d'un client |
 | `/corpus/ingest` | POST | clé SENTINEL | Indexer un document confidentiel |
-| `/corpus/stats` | GET | — | Statistiques du corpus |
+| `/corpus/stats` | GET | clé SENTINEL | Statistiques du corpus du client |
 | `/gateway/scan` | POST | clé SENTINEL | Analyser un texte sans le transmettre |
 | `/gateway/chat` | POST | clé SENTINEL | Pipeline complet vers un fournisseur IA |
 | `/dashboard/stats` | GET | token dashboard¹ | Compteurs et événements récents |
@@ -236,14 +236,14 @@ Le fournisseur reçoit `Hugo Blanc` et un IBAN factice valide. L'employé reçoi
 ```bash
 cd backend
 
-pytest tests/ -v                                    # 119 tests
+pytest tests/ -v                                    # 123 tests
 pytest tests/ --cov=app --cov-report=term-missing   # couverture
 python tests/benchmark.py                           # métriques de détection
 python tests/benchmark.py --verbose                 # détail par cas
 python tests/benchmark.py --json                    # sortie machine (CI)
 ```
 
-**Répartition des 119 tests :** détection L1 déterministe (22), normalisation L0 (13), vault FPE (16), chaîne d'audit (9), intégration moteur (9), API FastAPI (24), passerelle OpenAI-compatible et admin (9), révocation et rate-limiting (8), authentification dashboard (9).
+**Répartition des 119 tests :** détection L1 déterministe (22), normalisation L0 (13), vault FPE (16), chaîne d'audit (9), intégration moteur (9), API FastAPI (24), passerelle OpenAI-compatible et admin (9), révocation et rate-limiting (8), authentification dashboard (9), isolation multi-tenant (4).
 
 La CI GitHub Actions rejoue l'intégralité des tests et du benchmark sur Python 3.11 et 3.12 à chaque push.
 
@@ -273,11 +273,12 @@ Ces limites sont documentées **parce qu'elles existent dans toutes les solution
 - [x] Dashboard temps réel Vue 3 + WebSocket
 - [x] Registre Shadow AI (souveraineté des fournisseurs)
 - [x] Persistance Postgres validée (clés et audit survivent aux redémarrages)
-- [x] Suite de 119 tests, dont 50 tests d'intégration API (TestClient FastAPI)
+- [x] Suite de 123 tests, dont 54 tests d'intégration API (TestClient FastAPI)
 - [x] Endpoint compatible OpenAI : tous rôles assainis, réponse désanonymisée, `stream` en SSE simulé, `usage` réel remonté
 - [x] Token admin dédié (`ADMIN_TOKEN`), comparaison en temps constant
 - [x] Révocation de clés par client (`/admin/keys/revoke`, scellée dans l'audit) et rate-limiting par client (fenêtre glissante, `RATE_LIMIT_PER_MINUTE`)
 - [x] Authentification du dashboard et du WebSocket (`DASHBOARD_TOKEN`, sous-protocole WS, écran de connexion)
+- [x] Isolation multi-tenant du corpus L3 (le corpus d'un client n'influence jamais les scans d'un autre)
 - [x] Benchmark de détection chiffré (précision / rappel / F1)
 - [x] CI GitHub Actions (tests + benchmark sur Python 3.11 et 3.12)
 
@@ -322,7 +323,7 @@ Benchmark over **89 labelled prompts** (`backend/tests/benchmark.py`):
 | **Overall** | **100%** | **100%** | **100%** |
 
 **42 innocent prompts processed with zero false positives.** Average latency: ~100 ms/prompt.
-Test suite: **119 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
+Test suite: **123 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
 
 > These figures cover the provided test set (structured formats, base64/hex/spacing obfuscation, evasion attempts). They are not a guarantee of exhaustive detection — see [Known limitations](#known-limitations).
 
@@ -336,7 +337,7 @@ Test suite: **119 unit, integration and API tests, all green** in CI on Python 3
 
 ** Anti-evasion.** Data hidden in base64, hexadecimal or excessive spacing is revealed and neutralised. Social-engineering attempts against the gateway itself ("ignore the security rules") raise an **audit flag**.
 
-** IP leak detection.** Company confidential documents are ingested and indexed. If an employee pastes an excerpt from an internal contract, the request is **fully blocked**.
+** IP leak detection.** Company confidential documents are ingested and indexed, **partitioned per client**: one tenant's corpus never affects another's scans. If an employee pastes an excerpt from an internal contract, the request is **fully blocked**.
 
 ** Tamper-evident audit log.** Every decision is sealed with HMAC-SHA256 chained to the previous entry. Sensitive log data is encrypted with a per-entity derived key — erasing an entity (GDPR right to erasure) means **destroying its key**: *crypto-shredding*.
 
@@ -408,7 +409,7 @@ cd ../frontend && npm install && npm run dev    # dashboard
 | `/admin/keys` | POST | admin token | Create a client key |
 | `/admin/keys/revoke` | POST | admin token | Revoke all keys of a client |
 | `/corpus/ingest` | POST | SENTINEL key | Index a confidential document |
-| `/corpus/stats` | GET | — | Corpus statistics |
+| `/corpus/stats` | GET | SENTINEL key | Client's corpus statistics |
 | `/gateway/scan` | POST | SENTINEL key | Analyse text without forwarding |
 | `/gateway/chat` | POST | SENTINEL key | Full pipeline to an AI provider |
 | `/dashboard/stats` | GET | dashboard token¹ | Counters and recent events |
@@ -420,7 +421,7 @@ cd ../frontend && npm install && npm run dev    # dashboard
 
 ```bash
 cd backend
-pytest tests/ -v              # 119 tests
+pytest tests/ -v              # 123 tests
 python tests/benchmark.py     # detection metrics
 ```
 
@@ -451,11 +452,12 @@ These limitations are documented **because they exist in every solution on the m
 - [x] Real-time Vue 3 + WebSocket dashboard
 - [x] Shadow AI registry (provider sovereignty)
 - [x] Postgres persistence validated (keys and audit survive restarts)
-- [x] 119-test suite, including 50 API integration tests (FastAPI TestClient)
+- [x] 123-test suite, including 54 API integration tests (FastAPI TestClient)
 - [x] OpenAI-compatible endpoint: all roles sanitised, response detokenised, simulated SSE `stream`, real `usage` passthrough
 - [x] Dedicated admin token (`ADMIN_TOKEN`), constant-time comparison
 - [x] Per-client key revocation (`/admin/keys/revoke`, sealed in the audit chain) and per-client rate limiting (sliding window, `RATE_LIMIT_PER_MINUTE`)
 - [x] Dashboard and WebSocket authentication (`DASHBOARD_TOKEN`, WS subprotocol, login screen)
+- [x] Multi-tenant isolation of the L3 corpus (one client's corpus never affects another's scans)
 - [x] Quantified detection benchmark (precision / recall / F1)
 - [x] GitHub Actions CI (tests + benchmark on Python 3.11 and 3.12)
 

@@ -111,7 +111,10 @@ async def revoke_keys(req: RevokeRequest) -> dict:
 @app.post("/corpus/ingest")
 async def ingest(req: IngestRequest,
                  client_id: str = Depends(auth.verify_key)) -> dict:
-    result = await asyncio.to_thread(l3_semantic.ingest_document, req.doc_id, req.text)
+    """Indexe un document dans le corpus DU CLIENT authentifié
+    (isolation multi-tenant)."""
+    result = await asyncio.to_thread(l3_semantic.ingest_document,
+                                     req.doc_id, req.text, client_id)
     await chain.append_async("CORPUS_INGEST", "DOCUMENT", req.doc_id,
                              {"shingles": result["shingles"], "chunks": result["chunks"],
                               "client": client_id})
@@ -119,15 +122,16 @@ async def ingest(req: IngestRequest,
 
 
 @app.get("/corpus/stats")
-async def corpus_stats() -> dict:
-    return l3_semantic.corpus_stats()
+async def corpus_stats(client_id: str = Depends(auth.verify_key)) -> dict:
+    """Statistiques du corpus du client authentifié uniquement."""
+    return l3_semantic.corpus_stats(client_id)
 
 
 @app.post("/gateway/scan")
 async def scan(req: ScanRequest,
                client_id: str = Depends(auth.verify_key)) -> dict:
     """Scan seul (sans transmission). Protégé par clé SENTINEL."""
-    result = await engine.analyze(req.text)
+    result = await engine.analyze(req.text, client_id)
     await events.publish({"kind": "scan", "length": len(req.text)})
 
     evasion_flag = None

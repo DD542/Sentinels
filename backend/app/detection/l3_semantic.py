@@ -10,12 +10,20 @@ settings = get_settings()
 # ============================================================
 # Index du corpus confidentiel (mémoire pour la démo ;
 # production : table Postgres + pgvector)
+#
+# Cloisonné par client : le corpus du client A ne doit jamais
+# influencer les scans du client B (ni bloquer ses requêtes, ni
+# révéler l'existence de ses documents).
 # ============================================================
 
 _lock = threading.Lock()
-_SHINGLE_INDEX: dict[int, str] = {}       # hash de shingle -> doc_id
-_DOC_CHUNKS: list[dict] = []              # chunks + embeddings éventuels
+# client_id -> {hash de shingle -> doc_id}
+_SHINGLE_INDEX: dict[str, dict[int, str]] = {}
+# client_id -> [chunks + embeddings éventuels]
+_DOC_CHUNKS: dict[str, list[dict]] = {}
 _EMBED_MODEL = None
+
+DEFAULT_CLIENT = "default"
 
 SHINGLE_N = 5
 LEAK_RATIO = 0.15
@@ -63,14 +71,17 @@ def _cosine(a, b) -> float:
 # Ingestion du corpus confidentiel
 # ============================================================
 
-def ingest_document(doc_id: str, text: str) -> dict:
-    """Indexe un document confidentiel : shingles + embeddings de chunks."""
+def ingest_document(doc_id: str, text: str,
+                    client_id: str = DEFAULT_CLIENT) -> dict:
+    """Indexe un document confidentiel dans le corpus DU CLIENT :
+    shingles + embeddings de chunks."""
     tokens = _tokens(text)
     shingles = _shingle_hashes(tokens)
 
     with _lock:
+        index = _SHINGLE_INDEX.setdefault(client_id, {})
         for h in shingles:
-            _SHINGLE_INDEX[h] = doc_id
+            index[h] = doc_id
 
     chunk_count = 0
     embedder = _get_embedder()
@@ -79,17 +90,21 @@ def ingest_document(doc_id: str, text: str) -> dict:
         chunks = [" ".join(words[i:i + 120]) for i in range(0, len(words), 90)]
         vectors = embedder.encode([f"passage: {c}" for c in chunks])
         with _lock:
+            doc_chunks = _DOC_CHUNKS.setdefault(client_id, [])
             for chunk, vec in zip(chunks, vectors):
-                _DOC_CHUNKS.append({"doc_id": doc_id, "text": chunk, "vec": vec})
+                doc_chunks.append({"doc_id": doc_id, "text": chunk, "vec": vec})
         chunk_count = len(chunks)
 
     return {"doc_id": doc_id, "shingles": len(shingles), "chunks": chunk_count}
 
 
-def corpus_stats() -> dict:
+def corpus_stats(client_id: str = DEFAULT_CLIENT) -> dict:
+    """Statistiques du corpus DU CLIENT uniquement — ne jamais révéler
+    l'existence de documents d'autres tenants."""
     return {
-        "shingles_indexed": len(_SHINGLE_INDEX),
-        "embedded_chunks": len(_DOC_CHUNKS),
+        "client_id": client_id,
+        "shingles_indexed": len(_SHINGLE_INDEX.get(client_id, {})),
+        "embedded_chunks": len(_DOC_CHUNKS.get(client_id, [])),
         "embeddings_active": _get_embedder() is not None,
     }
 
@@ -98,9 +113,13 @@ def corpus_stats() -> dict:
 # Détection
 # ============================================================
 
-def scan_sync(text: str) -> list[Finding]:
+def scan_sync(text: str, client_id: str = DEFAULT_CLIENT) -> list[Finding]:
+    """Detecte une fuite de contenu confidentiel contre le corpus DU CLIENT
+    uniquement (isolation multi-tenant)."""
     findings: list[Finding] = []
-    if not _SHINGLE_INDEX and not _DOC_CHUNKS:
+    shingle_index = _SHINGLE_INDEX.get(client_id, {})
+    doc_chunks = _DOC_CHUNKS.get(client_id, [])
+    if not shingle_index and not doc_chunks:
         return findings
 
     tokens = _tokens(text)
@@ -108,10 +127,10 @@ def scan_sync(text: str) -> list[Finding]:
     # --- Niveau 1 : containment de shingles (copie, quasi-copie) ---
     prompt_shingles = _shingle_hashes(tokens)
     if prompt_shingles:
-        matched = prompt_shingles & set(_SHINGLE_INDEX.keys())
+        matched = prompt_shingles & set(shingle_index.keys())
         ratio = len(matched) / len(prompt_shingles)
         if ratio >= LEAK_RATIO and len(matched) >= LEAK_MIN_MATCHED:
-            source_docs = {_SHINGLE_INDEX[h] for h in matched}
+            source_docs = {shingle_index[h] for h in matched}
             findings.append(Finding(
                 entity_type=EntityType.IP_LEAK,
                 start=0, end=len(text), value=text[:80],
@@ -128,10 +147,10 @@ def scan_sync(text: str) -> list[Finding]:
 
     # --- Niveau 2 : similarité sémantique (reformulation) ---
     embedder = _get_embedder()
-    if embedder and _DOC_CHUNKS and len(tokens) >= 8:
+    if embedder and doc_chunks and len(tokens) >= 8:
         qvec = embedder.encode([f"query: {text}"])[0]
         best_sim, best_doc = 0.0, None
-        for chunk in _DOC_CHUNKS:
+        for chunk in doc_chunks:
             sim = _cosine(qvec, chunk["vec"])
             if sim > best_sim:
                 best_sim, best_doc = sim, chunk["doc_id"]

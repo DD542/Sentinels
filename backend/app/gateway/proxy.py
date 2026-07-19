@@ -25,7 +25,7 @@ class ChatRequest(BaseModel):
 
 
 async def _sanitize(text: str, client_id: str) -> tuple[str, list[dict], bool]:
-    result = await engine.analyze(text)
+    result = await engine.analyze(text, client_id)
     await events.publish({"kind": "scan", "length": len(text)})
 
     if result.evasion_attempts:
