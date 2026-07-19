@@ -1,8 +1,11 @@
 import { ref, reactive, onMounted, onUnmounted } from "vue";
 import { API_BASE, WS_URL } from "../config";
 
+const TOKEN_KEY = "sentinel_dashboard_token";
+
 export function useSentinel() {
   const connected = ref(false);
+  const authRequired = ref(false);
   const auditIntegrity = ref(true);
   const stats = reactive({
     prompts_scanned: 0,
@@ -18,6 +21,10 @@ export function useSentinel() {
 
   let ws = null;
   let reconnectTimer = null;
+
+  function getToken() {
+    return localStorage.getItem(TOKEN_KEY) || "";
+  }
 
   function applySnapshot(snap) {
     if (snap.stats) Object.assign(stats, snap.stats);
@@ -56,20 +63,46 @@ export function useSentinel() {
   }
 
   function connect() {
-    ws = new WebSocket(WS_URL);
-    ws.onopen = () => { connected.value = true; };
+    // Le token passe en second sous-protocole ("sentinel.v1", token) :
+    // seul moyen pour un navigateur d'authentifier un WebSocket sans
+    // exposer le secret dans l'URL.
+    const token = getToken();
+    ws = token ? new WebSocket(WS_URL, ["sentinel.v1", token]) : new WebSocket(WS_URL);
+    ws.onopen = () => { connected.value = true; authRequired.value = false; };
     ws.onmessage = (e) => handleEvent(JSON.parse(e.data));
-    ws.onclose = () => { connected.value = false; reconnectTimer = setTimeout(connect, 2000); };
+    ws.onclose = (e) => {
+      connected.value = false;
+      // 1008 = token refusé côté serveur : on arrête de marteler et on
+      // affiche l'écran de saisie du token.
+      if (e.code === 1008 || authRequired.value) {
+        authRequired.value = true;
+        return;
+      }
+      reconnectTimer = setTimeout(connect, 2000);
+    };
     ws.onerror = () => ws && ws.close();
   }
 
   async function loadInitial() {
     try {
-      const r = await fetch(`${API_BASE}/dashboard/stats`);
+      const token = getToken();
+      const r = await fetch(`${API_BASE}/dashboard/stats`, {
+        headers: token ? { "X-Dashboard-Token": token } : {},
+      });
+      if (r.status === 401) { authRequired.value = true; return; }
       const data = await r.json();
       applySnapshot(data);
       auditIntegrity.value = data.audit_integrity;
     } catch (_) { /* backend pas prêt */ }
+  }
+
+  function setToken(token) {
+    localStorage.setItem(TOKEN_KEY, token.trim());
+    authRequired.value = false;
+    if (ws) ws.close();
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    loadInitial();
+    connect();
   }
 
   onMounted(() => { loadInitial(); connect(); });
@@ -78,5 +111,5 @@ export function useSentinel() {
     if (reconnectTimer) clearTimeout(reconnectTimer);
   });
 
-  return { connected, auditIntegrity, stats, feed, scans };
+  return { connected, authRequired, auditIntegrity, stats, feed, scans, setToken };
 }

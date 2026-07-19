@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     admin_token: str = ""
     # Rate-limiting par client (fenêtre glissante 60 s). 0 = désactivé.
     rate_limit_per_minute: int = 120
+    # Token du dashboard (API stats + WebSocket temps réel).
+    # Vide = accès libre (dev/démo) ; défini = obligatoire.
+    dashboard_token: str = ""
     # Détection
     l3_similarity_threshold: float = 0.86
     l3_simhash_max_distance: int = 3
@@ -44,7 +47,7 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     mistral_api_key: str = ""
     @field_validator("vault_master_key", "audit_hmac_key", "database_url",
-                     "admin_token", mode="before")
+                     "admin_token", "dashboard_token", mode="before")
     @classmethod
     def _strip_whitespace(cls, v):
         if isinstance(v, str):

@@ -8,6 +8,9 @@ services:
       - database_url=${DATABASE_URL:-}
       - vault_master_key=${VAULT_MASTER_KEY}
       - audit_hmac_key=${AUDIT_HMAC_KEY}
+      - admin_token=${ADMIN_TOKEN:-}
+      - dashboard_token=${DASHBOARD_TOKEN:-}
+      - rate_limit_per_minute=${RATE_LIMIT_PER_MINUTE:-120}
       - ollama_base_url=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
     restart: unless-stopped
     healthcheck:

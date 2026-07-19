@@ -1,8 +1,14 @@
 <script setup>
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { useSentinel } from "./composables/useSentinel";
 
-const { connected, auditIntegrity, stats, feed, scans } = useSentinel();
+const { connected, authRequired, auditIntegrity, stats, feed, scans, setToken } = useSentinel();
+
+const tokenInput = ref("");
+function submitToken() {
+  if (tokenInput.value.trim()) setToken(tokenInput.value);
+  tokenInput.value = "";
+}
 
 const DONUT_COLORS = ["#f59a23", "#ffbe45", "#ffd98a", "#dd820c", "#b96a05", "#8f5304"];
 
@@ -77,7 +83,23 @@ function ts(t) {
 </script>
 
 <template>
-  <div class="sheet">
+  <div v-if="authRequired" class="auth-overlay">
+    <div class="auth-card">
+      <h1>SENTINEL</h1>
+      <p>Ce dashboard est protégé. Saisissez le token d'accès<br />(<code>DASHBOARD_TOKEN</code> du serveur).</p>
+      <form @submit.prevent="submitToken">
+        <input
+          v-model="tokenInput"
+          type="password"
+          placeholder="Token dashboard"
+          autofocus
+        />
+        <button type="submit">Accéder</button>
+      </form>
+    </div>
+  </div>
+
+  <div v-else class="sheet">
     <div class="header">
       <div>
         <h1>SENTINEL</h1>
@@ -247,3 +269,40 @@ function ts(t) {
     </div>
   </div>
 </template>
+
+<style scoped>
+.auth-overlay {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.auth-card {
+  text-align: center;
+  padding: 40px 48px;
+  border: 1px solid #e4e4e7;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+}
+.auth-card h1 { margin-bottom: 8px; }
+.auth-card p { color: #71717a; font-size: 14px; margin-bottom: 20px; }
+.auth-card form { display: flex; gap: 8px; justify-content: center; }
+.auth-card input {
+  padding: 10px 14px;
+  border: 1px solid #d4d4d8;
+  border-radius: 8px;
+  font-size: 14px;
+  width: 240px;
+}
+.auth-card button {
+  padding: 10px 18px;
+  border: none;
+  border-radius: 8px;
+  background: #f59a23;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+.auth-card button:hover { background: #dd820c; }
+</style>
