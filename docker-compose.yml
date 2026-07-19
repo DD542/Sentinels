@@ -1,0 +1,25 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      # Ces valeurs viennent du fichier .env à la racine (voir .env.example)
+      - database_url=${DATABASE_URL:-}
+      - vault_master_key=${VAULT_MASTER_KEY}
+      - audit_hmac_key=${AUDIT_HMAC_KEY}
+      - ollama_base_url=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
