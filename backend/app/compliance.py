@@ -79,6 +79,7 @@ async def build_report() -> dict:
             "rate_limit_per_minute": settings.rate_limit_per_minute,
             "dashboard_auth_enabled": bool(settings.dashboard_token),
             "dedicated_admin_token": bool(settings.admin_token),
+            "strict_mode": settings.strict_mode,
         },
     }
     payload["signature"] = _sign(payload)
@@ -173,6 +174,8 @@ Périmètre : {html.escape(r["scope"])}</p>
 <td>{_yesno(posture["dashboard_auth_enabled"])}</td></tr>
 <tr><td>Token admin dédié</td>
 <td>{_yesno(posture["dedicated_admin_token"])}</td></tr>
+<tr><td>Mode strict (fail-closed)</td>
+<td>{_yesno(posture["strict_mode"])}</td></tr>
 </table>
 
 <h2>6. Signature du rapport</h2>

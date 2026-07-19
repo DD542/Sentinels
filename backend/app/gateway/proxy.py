@@ -26,13 +26,14 @@ class ChatRequest(BaseModel):
 
 async def _sanitize(text: str, client_id: str) -> tuple[str, list[dict], bool]:
     result = await engine.analyze(text, client_id)
-    await events.publish({"kind": "scan", "length": len(text)})
+    await events.publish({"kind": "scan", "length": len(text),
+                          "client": client_id})
 
     if result.evasion_attempts:
         entry = await chain.append_async("EVASION_ATTEMPT", "GATEWAY", client_id,
                                          {"patterns": result.evasion_attempts})
         await events.publish({
-            "kind": "decision", "action": "EVASION_FLAG",
+            "kind": "decision", "client": client_id, "action": "EVASION_FLAG",
             "entity_type": "EVASION", "layer": "L0",
             "confidence": 1.0, "audit_hash": entry["hash"][:12],
         })
@@ -46,7 +47,7 @@ async def _sanitize(text: str, client_id: str) -> tuple[str, list[dict], bool]:
                 or ",".join(leak.meta.get("source_docs", ["?"]))),
             {"confidence": leak.confidence, **leak.meta})
         await events.publish({
-            "kind": "decision", "action": "BLOCK_REQUEST",
+            "kind": "decision", "client": client_id, "action": "BLOCK_REQUEST",
             "entity_type": "IP_LEAK", "layer": "L3",
             "confidence": round(leak.confidence, 3),
             "audit_hash": entry["hash"][:12],
@@ -73,7 +74,7 @@ async def _sanitize(text: str, client_id: str) -> tuple[str, list[dict], bool]:
         decisions.append({"type": f.entity_type.value, "action": action.value,
                           "layer": f.layer, "audit_hash": entry["hash"][:12]})
         await events.publish({
-            "kind": "decision", "action": action.value,
+            "kind": "decision", "client": client_id, "action": action.value,
             "entity_type": f.entity_type.value, "layer": f.layer,
             "confidence": round(f.confidence, 3),
             "audit_hash": entry["hash"][:12],
@@ -88,7 +89,7 @@ async def _sanitize(text: str, client_id: str) -> tuple[str, list[dict], bool]:
                           "layer": f.layer, "obfuscation": f.meta.get("obfuscation"),
                           "audit_hash": entry["hash"][:12]})
         await events.publish({
-            "kind": "decision", "action": "BLOCK",
+            "kind": "decision", "client": client_id, "action": "BLOCK",
             "entity_type": f.entity_type.value, "layer": f.layer,
             "confidence": round(f.confidence, 3),
             "audit_hash": entry["hash"][:12],

@@ -2,7 +2,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, Response
+from fastapi import FastAPI, Depends, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -25,12 +25,36 @@ from . import logs
 settings = get_settings()
 
 
+def enforce_strict_mode() -> None:
+    """Fail-closed : en mode strict (production), on refuse de demarrer
+    avec une posture incomplete plutot que de tourner degrade en silence."""
+    problems = []
+    if not settings.database_url:
+        problems.append("database_url absent (persistance obligatoire)")
+    if settings.vault_master_key == "0" * 64:
+        problems.append("vault_master_key est la valeur par defaut")
+    if settings.audit_hmac_key == "1" * 64:
+        problems.append("audit_hmac_key est la valeur par defaut")
+    if not settings.admin_token:
+        problems.append("admin_token non defini")
+    if not settings.dashboard_token:
+        problems.append("dashboard_token non defini")
+    if problems:
+        raise RuntimeError(
+            "SENTINEL_STRICT : demarrage refuse — " + " ; ".join(problems))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logs.configure()
+    if settings.strict_mode:
+        enforce_strict_mode()
     await db.init_db()
     await auth.load_keys_from_db()
     await chain.load_from_db()
+    if settings.strict_mode and not db.is_enabled():
+        raise RuntimeError(
+            "SENTINEL_STRICT : demarrage refuse — connexion Postgres impossible")
     yield
     await db.close_db()
 
@@ -121,6 +145,18 @@ async def revoke_keys(req: RevokeRequest) -> dict:
             "audit_hash": entry["hash"][:12]}
 
 
+@app.get("/admin/usage")
+async def usage(x_admin_token: str | None = Header(default=None)) -> dict:
+    """Consommation par client (prompts, tokenisations, blocages) —
+    base de facturation a l'usage. Protege par le token admin."""
+    if not x_admin_token or not secrets.compare_digest(
+            x_admin_token, settings.effective_admin_token):
+        raise HTTPException(status_code=403, detail="Token admin invalide")
+    by_client = events.snapshot()["stats"]["by_client"]
+    return {"clients": by_client,
+            "total_prompts": sum(c["prompts"] for c in by_client.values())}
+
+
 @app.post("/corpus/ingest")
 async def ingest(req: IngestRequest,
                  client_id: str = Depends(auth.verify_key)) -> dict:
@@ -145,7 +181,8 @@ async def scan(req: ScanRequest,
                client_id: str = Depends(auth.verify_key)) -> dict:
     """Scan seul (sans transmission). Protégé par clé SENTINEL."""
     result = await engine.analyze(req.text, client_id)
-    await events.publish({"kind": "scan", "length": len(req.text)})
+    await events.publish({"kind": "scan", "length": len(req.text),
+                          "client": client_id})
 
     evasion_flag = None
     if result.evasion_attempts:
@@ -153,7 +190,7 @@ async def scan(req: ScanRequest,
                                          {"patterns": result.evasion_attempts})
         evasion_flag = entry["hash"][:12]
         await events.publish({
-            "kind": "decision", "action": "EVASION_FLAG",
+            "kind": "decision", "client": client_id, "action": "EVASION_FLAG",
             "entity_type": "EVASION", "layer": "L0",
             "confidence": 1.0, "audit_hash": evasion_flag,
         })
@@ -167,7 +204,7 @@ async def scan(req: ScanRequest,
                 or ",".join(leak.meta.get("source_docs", ["?"]))),
             {"confidence": leak.confidence, **leak.meta})
         await events.publish({
-            "kind": "decision", "action": "BLOCK_REQUEST",
+            "kind": "decision", "client": client_id, "action": "BLOCK_REQUEST",
             "entity_type": "IP_LEAK", "layer": "L3",
             "confidence": round(leak.confidence, 3),
             "audit_hash": entry["hash"][:12],
@@ -200,7 +237,7 @@ async def scan(req: ScanRequest,
             f"{f.entity_type.value}:{f.start}",
             {"value": f.value, "confidence": f.confidence, "layer": f.layer})
         await events.publish({
-            "kind": "decision", "action": action.value,
+            "kind": "decision", "client": client_id, "action": action.value,
             "entity_type": f.entity_type.value, "layer": f.layer,
             "confidence": round(f.confidence, 3),
             "audit_hash": entry["hash"][:12],
@@ -216,7 +253,7 @@ async def scan(req: ScanRequest,
             {"confidence": f.confidence, "layer": f.layer,
              "obfuscation": f.meta.get("obfuscation")})
         await events.publish({
-            "kind": "decision", "action": "BLOCK",
+            "kind": "decision", "client": client_id, "action": "BLOCK",
             "entity_type": f.entity_type.value, "layer": f.layer,
             "confidence": round(f.confidence, 3),
             "audit_hash": entry["hash"][:12],

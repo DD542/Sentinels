@@ -20,7 +20,15 @@ _STATS = {
     "ip_leaks_blocked": 0,
     "by_type": {},
     "by_provider": {},   # {"groq": 12, "anthropic": 3, ...}
+    # Metering par client — base de facturation a l'usage.
+    # {client_id: {"prompts": n, "tokenized": n, "blocked": n}}
+    "by_client": {},
 }
+
+
+def _client_bucket(client_id: str) -> dict:
+    return _STATS["by_client"].setdefault(
+        client_id, {"prompts": 0, "tokenized": 0, "blocked": 0})
 
 
 def _log_event(event: dict) -> None:
@@ -60,8 +68,11 @@ async def publish(event: dict) -> None:
     _log_event(event)
 
     kind = event.get("kind")
+    client = event.get("client")
     if kind == "scan":
         _STATS["prompts_scanned"] += 1
+        if client:
+            _client_bucket(client)["prompts"] += 1
     elif kind == "provider":
         register_provider(event.get("provider", "?"))
     elif kind == "decision":
@@ -70,12 +81,18 @@ async def publish(event: dict) -> None:
         if action == "TOKENIZE":
             _STATS["entities_tokenized"] += 1
             _register_type(etype)
+            if client:
+                _client_bucket(client)["tokenized"] += 1
         elif action == "BLOCK":
             _STATS["secrets_blocked"] += 1
             _register_type(etype)
+            if client:
+                _client_bucket(client)["blocked"] += 1
         elif action == "BLOCK_REQUEST":
             _STATS["requests_blocked"] += 1
             _STATS["ip_leaks_blocked"] += 1
+            if client:
+                _client_bucket(client)["blocked"] += 1
 
     dead = []
     for q in _SUBSCRIBERS:
@@ -117,3 +134,4 @@ def reset() -> None:
         _STATS[k] = 0
     _STATS["by_type"] = {}
     _STATS["by_provider"] = {}
+    _STATS["by_client"] = {}

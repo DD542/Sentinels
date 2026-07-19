@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     # Format des logs : "json" (production, une ligne JSON par événement)
     # ou "text" (lisible, dev local).
     log_format: str = "json"
+    # Mode strict (production) : refuse de DÉMARRER si la posture est
+    # incomplète (persistance absente, clés crypto par défaut, tokens
+    # admin/dashboard non définis). Fail-closed plutôt que fail-open.
+    strict_mode: bool = False
     # Détection
     l3_similarity_threshold: float = 0.86
     l3_simhash_max_distance: int = 3

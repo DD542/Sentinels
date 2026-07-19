@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from "vue";
 import { useSentinel } from "./composables/useSentinel";
+import { API_BASE } from "./config";
 
 const { connected, authRequired, auditIntegrity, stats, feed, scans, setToken } = useSentinel();
 
@@ -8,6 +9,45 @@ const tokenInput = ref("");
 function submitToken() {
   if (tokenInput.value.trim()) setToken(tokenInput.value);
   tokenInput.value = "";
+}
+
+/* ---------- Playground : tester la passerelle depuis le dashboard ---------- */
+const scanText = ref(
+  "Rédige une relance pour Jean Dupont concernant le virement vers FR7610107001011234567890129"
+);
+const scanKey = ref(localStorage.getItem("sentinel_api_key") || "");
+const scanning = ref(false);
+const scanResult = ref(null);
+const scanError = ref("");
+
+async function runScan() {
+  if (!scanText.value.trim() || scanning.value) return;
+  scanning.value = true;
+  scanError.value = "";
+  scanResult.value = null;
+  localStorage.setItem("sentinel_api_key", scanKey.value.trim());
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (scanKey.value.trim()) headers["X-SENTINEL-Key"] = scanKey.value.trim();
+    const r = await fetch(`${API_BASE}/gateway/scan`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text: scanText.value }),
+    });
+    if (r.status === 401) {
+      scanError.value = "Clé SENTINEL requise ou invalide (champ ci-dessous).";
+      return;
+    }
+    if (r.status === 429) {
+      scanError.value = "Quota dépassé — réessayez dans une minute.";
+      return;
+    }
+    scanResult.value = await r.json();
+  } catch (_) {
+    scanError.value = "Backend injoignable.";
+  } finally {
+    scanning.value = false;
+  }
 }
 
 const DONUT_COLORS = ["#f59a23", "#ffbe45", "#ffd98a", "#dd820c", "#b96a05", "#8f5304"];
@@ -127,6 +167,51 @@ function ts(t) {
         <button class="range">7 jours</button>
         <button class="range">30 jours</button>
       </div>
+    </div>
+
+    <div class="panel playground">
+      <h2>Tester la passerelle</h2>
+      <textarea
+        v-model="scanText"
+        rows="3"
+        placeholder="Collez un prompt contenant des données sensibles (IBAN, nom, clé API…)"
+      ></textarea>
+      <div class="playground-row">
+        <input
+          v-model="scanKey"
+          type="password"
+          placeholder="Clé SENTINEL (sntl_…) — optionnelle en mode démo"
+        />
+        <button @click="runScan" :disabled="scanning">
+          {{ scanning ? "Analyse…" : "Analyser" }}
+        </button>
+      </div>
+      <div v-if="scanError" class="playground-error">{{ scanError }}</div>
+      <template v-if="scanResult">
+        <div v-if="scanResult.blocked" class="playground-blocked">
+          Requête bloquée — {{ scanResult.reason }}
+          <span class="mono">({{ scanResult.audit_hash }})</span>
+        </div>
+        <template v-else>
+          <div class="playground-label">
+            Ce que le fournisseur d'IA aurait reçu :
+          </div>
+          <pre class="playground-output">{{ scanResult.sanitized }}</pre>
+          <div v-if="scanResult.decisions && scanResult.decisions.length" class="playground-decisions">
+            <span
+              v-for="(d, i) in scanResult.decisions"
+              :key="i"
+              class="badge"
+              :class="{ block: d.action !== 'TOKENIZE' }"
+            >
+              {{ d.type }} · {{ d.action === "TOKENIZE" ? "anonymisé" : "bloqué" }} · {{ d.layer }}
+            </span>
+          </div>
+          <div v-else class="playground-label ok-note">
+            Aucune donnée sensible détectée — le prompt part tel quel.
+          </div>
+        </template>
+      </template>
     </div>
 
     <div class="grid-kpi">
@@ -305,4 +390,64 @@ function ts(t) {
   cursor: pointer;
 }
 .auth-card button:hover { background: #dd820c; }
+
+/* ---------- Playground ---------- */
+.playground { margin-bottom: 16px; }
+.playground textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid #d4d4d8;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 14px;
+  resize: vertical;
+}
+.playground-row { display: flex; gap: 8px; margin-top: 8px; }
+.playground-row input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #d4d4d8;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.playground-row button {
+  padding: 8px 20px;
+  border: none;
+  border-radius: 8px;
+  background: #f59a23;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+.playground-row button:hover { background: #dd820c; }
+.playground-row button:disabled { opacity: 0.6; cursor: wait; }
+.playground-error {
+  margin-top: 10px; color: #b02a37; font-size: 14px;
+}
+.playground-blocked {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #fdecee;
+  border: 1px solid #f1aeb5;
+  border-radius: 8px;
+  color: #b02a37;
+  font-weight: 600;
+  font-size: 14px;
+}
+.playground-label { margin-top: 12px; font-size: 13px; color: #71717a; }
+.playground-label.ok-note { color: #157347; }
+.playground-output {
+  margin-top: 6px;
+  padding: 10px 12px;
+  background: #fafafa;
+  border: 1px solid #e4e4e7;
+  border-radius: 8px;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.playground-decisions {
+  margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap;
+}
 </style>
