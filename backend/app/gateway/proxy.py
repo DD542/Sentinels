@@ -140,8 +140,11 @@ async def chat(req: ChatRequest,
         return {"blocked": False,
                 "error": "Cle API fournisseur invalide ou placeholder non remplace"}
 
+    # Tous les roles sont assainis (user, system, assistant) : un prompt
+    # system ou un historique recolle peut contenir autant de donnees
+    # sensibles qu'un message utilisateur.
     for msg in req.messages:
-        if msg.get("role") == "user":
+        if isinstance(msg.get("content"), str) and msg["content"]:
             sanitized, decisions, blocked = await _sanitize(msg["content"], client_id)
             if blocked:
                 return {"blocked": True,

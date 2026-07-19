@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/DD542/sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/DD542/sentinel/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-93%20passed-brightgreen)](https://github.com/DD542/sentinel)
+[![Tests](https://img.shields.io/badge/tests-102%20passed-brightgreen)](https://github.com/DD542/sentinel)
 [![Benchmark](https://img.shields.io/badge/detection%20F1-100%25-brightgreen)](https://github.com/DD542/sentinel)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -70,7 +70,7 @@ Benchmark sur **89 prompts étiquetés** (`backend/tests/benchmark.py`) :
 | **Global** | **100 %** | **100 %** | **100 %** |
 
 **42 prompts innocents traités sans aucun faux positif.** Latence moyenne : ~100 ms/prompt.
-Suite de tests : **93 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
+Suite de tests : **102 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
 
 > Ces chiffres portent sur le jeu de test fourni, qui couvre les formats structurés, l'obfuscation (base64, hexadécimal, espacement) et les tentatives d'évasion. Ils ne constituent pas une garantie de détection exhaustive — voir [Limites connues](#limites-connues).
 
@@ -153,6 +153,7 @@ Créer `backend/.env` :
 database_url=
 vault_master_key=<64 caractères hex>
 audit_hmac_key=<64 caractères hex>
+admin_token=<secret dédié pour /admin/keys>
 ```
 
 Générer les clés cryptographiques :
@@ -186,7 +187,7 @@ Le dashboard est accessible sur `http://localhost:5173`.
 ```bash
 curl -X POST http://localhost:8000/admin/keys \
   -H "Content-Type: application/json" \
-  -d '{"client_id": "mon-entreprise", "admin_token": "<audit_hmac_key>"}'
+  -d '{"client_id": "mon-entreprise", "admin_token": "<ADMIN_TOKEN>"}'
 ```
 
 **Indexer un document confidentiel** (protège son contenu contre les fuites)
@@ -232,14 +233,14 @@ Le fournisseur reçoit `Hugo Blanc` et un IBAN factice valide. L'employé reçoi
 ```bash
 cd backend
 
-pytest tests/ -v                                    # 93 tests
+pytest tests/ -v                                    # 102 tests
 pytest tests/ --cov=app --cov-report=term-missing   # couverture
 python tests/benchmark.py                           # métriques de détection
 python tests/benchmark.py --verbose                 # détail par cas
 python tests/benchmark.py --json                    # sortie machine (CI)
 ```
 
-**Répartition des 93 tests :** détection L1 déterministe (22), normalisation L0 (13), vault FPE (16), chaîne d'audit (9), intégration moteur (9), API FastAPI (24).
+**Répartition des 102 tests :** détection L1 déterministe (22), normalisation L0 (13), vault FPE (16), chaîne d'audit (9), intégration moteur (9), API FastAPI (24), passerelle OpenAI-compatible et admin (9).
 
 La CI GitHub Actions rejoue l'intégralité des tests et du benchmark sur Python 3.11 et 3.12 à chaque push.
 
@@ -249,7 +250,7 @@ La CI GitHub Actions rejoue l'intégralité des tests et du benchmark sur Python
 
 - **Données jamais apprises.** La couche L3 protège les documents que vous lui avez ingérés. Un secret inédit et non structuré (« le projet Chimère sort mardi ») passe.
 - **Chiffrement fort et stéganographie.** L0 révèle base64, hex et espacement. Une donnée réellement chiffrée reste opaque.
-- **Réponses en streaming.** La désanonymisation opère sur la réponse complète. Le streaming token-par-token n'est pas encore géré.
+- **Réponses en streaming.** Le streaming est servi en SSE simulé : la réponse est obtenue et désanonymisée en entier, puis renvoyée en chunks (compatible clients OpenAI, aucun token coupé). Le vrai streaming token-par-token du fournisseur, avec désanonymisation incrémentale, reste à venir.
 - **Langue.** Les couches L2 et L3 sont calibrées pour le français. L'anglais et les autres langues ne sont pas couverts.
 - **Récupération floue.** Si une réponse contient plusieurs IBAN très proches du token corrompu, la restauration pourrait viser la mauvaise cible. Le seuil de similarité et le filtre pays limitent fortement ce cas, sans l'éliminer.
 - **Collisions FPE.** Théoriquement possibles, en pratique négligeables avec HMAC-SHA256.
@@ -270,13 +271,15 @@ Ces limites sont documentées **parce qu'elles existent dans toutes les solution
 - [x] Dashboard temps réel Vue 3 + WebSocket
 - [x] Registre Shadow AI (souveraineté des fournisseurs)
 - [x] Persistance Postgres validée (clés et audit survivent aux redémarrages)
-- [x] Suite de 93 tests, dont 24 tests d'intégration API (TestClient FastAPI)
+- [x] Suite de 102 tests, dont 33 tests d'intégration API (TestClient FastAPI)
+- [x] Endpoint compatible OpenAI : tous rôles assainis, réponse désanonymisée, `stream` en SSE simulé, `usage` réel remonté
+- [x] Token admin dédié (`ADMIN_TOKEN`), comparaison en temps constant
 - [x] Benchmark de détection chiffré (précision / rappel / F1)
 - [x] CI GitHub Actions (tests + benchmark sur Python 3.11 et 3.12)
 
 **🔜 À venir**
 
-- [ ] Support du streaming (désanonymisation incrémentale)
+- [ ] Streaming natif du fournisseur (désanonymisation incrémentale)
 - [ ] Détection multilingue (EN, ES, DE)
 - [ ] Rate-limiting par clé et endpoint de révocation
 - [ ] Authentification du dashboard et du WebSocket
@@ -317,7 +320,7 @@ Benchmark over **89 labelled prompts** (`backend/tests/benchmark.py`):
 | **Overall** | **100%** | **100%** | **100%** |
 
 **42 innocent prompts processed with zero false positives.** Average latency: ~100 ms/prompt.
-Test suite: **93 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
+Test suite: **102 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
 
 > These figures cover the provided test set (structured formats, base64/hex/spacing obfuscation, evasion attempts). They are not a guarantee of exhaustive detection — see [Known limitations](#known-limitations).
 
@@ -381,6 +384,7 @@ Create `backend/.env`:
 database_url=
 vault_master_key=<64 hex chars>
 audit_hmac_key=<64 hex chars>
+admin_token=<dedicated secret for /admin/keys>
 ```
 
 Generate keys with `python -c "import secrets; print(secrets.token_hex(32))"`.
@@ -411,7 +415,7 @@ cd ../frontend && npm install && npm run dev    # dashboard
 
 ```bash
 cd backend
-pytest tests/ -v              # 93 tests
+pytest tests/ -v              # 102 tests
 python tests/benchmark.py     # detection metrics
 ```
 
@@ -423,7 +427,7 @@ CI runs the full test suite and benchmark on Python 3.11 and 3.12 on every push.
 
 - **Never-seen data.** Layer L3 protects the documents you ingested. A novel, unstructured secret slips through.
 - **Strong encryption and steganography.** L0 reveals base64, hex and spacing. Genuinely encrypted data stays opaque.
-- **Streaming responses.** Detokenisation works on the complete response; token-by-token streaming is not yet handled.
+- **Streaming responses.** Streaming is served as simulated SSE: the response is fetched and detokenised in full, then sent in chunks (OpenAI-client compatible, no token ever split). True incremental provider streaming is still to come.
 - **Language.** L2 and L3 are tuned for French. Other languages are not covered.
 - **Fuzzy recovery.** With several near-identical IBANs in one response, restoration could target the wrong one.
 - **Production hardening.** No per-key rate limiting, no revocation endpoint, no dashboard authentication yet.
@@ -443,13 +447,15 @@ These limitations are documented **because they exist in every solution on the m
 - [x] Real-time Vue 3 + WebSocket dashboard
 - [x] Shadow AI registry (provider sovereignty)
 - [x] Postgres persistence validated (keys and audit survive restarts)
-- [x] 93-test suite, including 24 API integration tests (FastAPI TestClient)
+- [x] 102-test suite, including 33 API integration tests (FastAPI TestClient)
+- [x] OpenAI-compatible endpoint: all roles sanitised, response detokenised, simulated SSE `stream`, real `usage` passthrough
+- [x] Dedicated admin token (`ADMIN_TOKEN`), constant-time comparison
 - [x] Quantified detection benchmark (precision / recall / F1)
 - [x] GitHub Actions CI (tests + benchmark on Python 3.11 and 3.12)
 
 ** Next**
 
-- [ ] Streaming support (incremental detokenisation)
+- [ ] Native provider streaming (incremental detokenisation)
 - [ ] Multilingual detection (EN, ES, DE)
 - [ ] Per-key rate limiting and revocation endpoint
 - [ ] Dashboard and WebSocket authentication

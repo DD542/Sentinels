@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import secrets
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +12,7 @@ from .detection.types import Action, EntityType
 from .detection import l3_semantic
 from .gateway.proxy import router as gateway_router
 from .dashboard import router as dashboard_router
+from .gateway.openai_compat import router as openai_router
 from .vault import fpe
 from .audit import chain
 from . import events
@@ -44,6 +46,7 @@ app.add_middleware(
 
 app.include_router(gateway_router)
 app.include_router(dashboard_router)
+app.include_router(openai_router)
 engine = DetectionEngine()
 
 
@@ -69,9 +72,10 @@ async def health() -> dict:
 
 @app.post("/admin/keys")
 async def create_key(req: KeyRequest) -> dict:
-    """Crée une clé API client. Protégé par le token admin
-    (= la clé HMAC d'audit du .env, connue du seul exploitant)."""
-    if req.admin_token != settings.audit_hmac_key:
+    """Crée une clé API client. Protégé par le token admin dédié
+    (ADMIN_TOKEN du .env ; repli sur la clé HMAC d'audit si absent)."""
+    if not secrets.compare_digest(req.admin_token,
+                                  settings.effective_admin_token):
         raise HTTPException(status_code=403, detail="Token admin invalide")
     raw_key = await auth.generate_key_async(req.client_id)
     return {
