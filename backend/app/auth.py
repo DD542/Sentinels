@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from fastapi import Header, HTTPException
 from .config import get_settings
 from . import db
+from . import ratelimit
 
 settings = get_settings()
 
@@ -86,6 +87,7 @@ async def verify_key(x_sentinel_key: str | None = Header(default=None)) -> str:
     passer pour ne pas te verrouiller dehors au premier lancement. Des
     qu'une cle est creee, l'authentification devient stricte."""
     if not _KEYS and not db.is_enabled():
+        ratelimit.check("bootstrap")
         return "bootstrap"
 
     if not x_sentinel_key:
@@ -97,6 +99,7 @@ async def verify_key(x_sentinel_key: str | None = Header(default=None)) -> str:
     if record is None:
         raise HTTPException(status_code=401, detail="Cle SENTINEL invalide ou revoquee")
 
+    ratelimit.check(record["client_id"])
     return record["client_id"]
 
 
@@ -106,6 +109,7 @@ async def verify_bearer_key(authorization: str | None = Header(default=None)) ->
     logique de verification que verify_key, juste un header different
     (c'est le seul format qu'un client OpenAI standard sait envoyer)."""
     if not _KEYS and not db.is_enabled():
+        ratelimit.check("bootstrap")
         return "bootstrap"
 
     if not authorization or not authorization.lower().startswith("bearer "):
@@ -118,6 +122,7 @@ async def verify_bearer_key(authorization: str | None = Header(default=None)) ->
     if record is None:
         raise HTTPException(status_code=401, detail="Cle invalide ou revoquee")
 
+    ratelimit.check(record["client_id"])
     return record["client_id"]
 
 
@@ -139,6 +144,27 @@ async def revoke_key(raw_key: str) -> bool:
         except Exception:
             pass
     return revoked
+
+
+async def revoke_client(client_id: str) -> int:
+    """Revoque TOUTES les cles d'un client (admin). L'admin ne connait pas
+    les cles en clair (affichees une seule fois), la revocation se fait donc
+    par client_id. Retourne le nombre de cles desactivees en memoire."""
+    count = 0
+    for rec in _KEYS.values():
+        if rec["client_id"] == client_id and rec.get("active"):
+            rec["active"] = False
+            count += 1
+    if db.is_enabled():
+        try:
+            async with db.pool().acquire() as con:
+                await con.execute(
+                    "UPDATE api_keys SET active = FALSE WHERE client_id = $1",
+                    client_id,
+                )
+        except Exception as e:
+            print(f"[SENTINEL] Revocation DB echouee : {type(e).__name__}: {e}")
+    return count
 
 
 async def load_keys_from_db() -> None:

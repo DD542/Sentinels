@@ -64,6 +64,11 @@ class KeyRequest(BaseModel):
     admin_token: str
 
 
+class RevokeRequest(BaseModel):
+    client_id: str
+    admin_token: str
+
+
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "service": settings.app_name,
@@ -83,6 +88,24 @@ async def create_key(req: KeyRequest) -> dict:
         "api_key": raw_key,
         "warning": "Cette cle ne sera affichee qu'une seule fois. Conservez-la.",
     }
+
+
+@app.post("/admin/keys/revoke")
+async def revoke_keys(req: RevokeRequest) -> dict:
+    """Revoque toutes les cles d'un client (cle compromise, fin de contrat).
+    Effet immediat : la prochaine requete du client est rejetee en 401.
+    La revocation est scellee dans la chaine d'audit."""
+    if not secrets.compare_digest(req.admin_token,
+                                  settings.effective_admin_token):
+        raise HTTPException(status_code=403, detail="Token admin invalide")
+    count = await auth.revoke_client(req.client_id)
+    if count == 0:
+        raise HTTPException(status_code=404,
+                            detail="Aucune cle active pour ce client")
+    entry = await chain.append_async("KEY_REVOKED", "ADMIN", req.client_id,
+                                     {"keys_revoked": count})
+    return {"client_id": req.client_id, "keys_revoked": count,
+            "audit_hash": entry["hash"][:12]}
 
 
 @app.post("/corpus/ingest")

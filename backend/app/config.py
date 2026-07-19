@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     # cryptographiques : une clé HMAC sert à signer, jamais à s'authentifier.
     # Vide = repli sur audit_hmac_key (compatibilité installations existantes).
     admin_token: str = ""
+    # Rate-limiting par client (fenêtre glissante 60 s). 0 = désactivé.
+    rate_limit_per_minute: int = 120
     # Détection
     l3_similarity_threshold: float = 0.86
     l3_simhash_max_distance: int = 3
