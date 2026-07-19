@@ -59,7 +59,9 @@ async def build_report() -> dict:
     payload = {
         "report": "SENTINEL — rapport de conformite",
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "scope": "session en cours (compteurs en memoire)",
+        "scope": ("depuis l'installation (compteurs persistes)"
+                  if db.is_enabled()
+                  else "session en cours (compteurs en memoire)"),
         "activity": {
             "prompts_scanned": stats["prompts_scanned"],
             "entities_tokenized": stats["entities_tokenized"],

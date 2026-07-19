@@ -65,6 +65,22 @@ async def init_db() -> None:
                     prev_hash   TEXT NOT NULL,
                     hash        TEXT NOT NULL
                 );
+
+                -- Metering par client et par jour : base de facturation,
+                -- survit aux redemarrages.
+                CREATE TABLE IF NOT EXISTS usage_counters (
+                    client_id TEXT NOT NULL,
+                    day       DATE NOT NULL,
+                    prompts   BIGINT NOT NULL DEFAULT 0,
+                    tokenized BIGINT NOT NULL DEFAULT 0,
+                    blocked   BIGINT NOT NULL DEFAULT 0,
+                    PRIMARY KEY (client_id, day)
+                );
+
+                CREATE TABLE IF NOT EXISTS provider_counters (
+                    provider TEXT PRIMARY KEY,
+                    requests BIGINT NOT NULL DEFAULT 0
+                );
             """)
     except Exception as e:
         # Connexion impossible : on reste en repli mémoire plutôt que crasher.

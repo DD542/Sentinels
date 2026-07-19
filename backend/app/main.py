@@ -52,6 +52,7 @@ async def lifespan(app: FastAPI):
     await db.init_db()
     await auth.load_keys_from_db()
     await chain.load_from_db()
+    await events.load_stats_from_db()
     if settings.strict_mode and not db.is_enabled():
         raise RuntimeError(
             "SENTINEL_STRICT : demarrage refuse — connexion Postgres impossible")
@@ -146,14 +147,46 @@ async def revoke_keys(req: RevokeRequest) -> dict:
 
 
 @app.get("/admin/usage")
-async def usage(x_admin_token: str | None = Header(default=None)) -> dict:
+async def usage(x_admin_token: str | None = Header(default=None),
+                days: int = 30) -> dict:
     """Consommation par client (prompts, tokenisations, blocages) —
-    base de facturation a l'usage. Protege par le token admin."""
+    base de facturation a l'usage. Protege par le token admin.
+    Avec persistance : totaux lus en DB (source de verite, survit aux
+    redemarrages) + ventilation journaliere sur `days` jours."""
     if not x_admin_token or not secrets.compare_digest(
             x_admin_token, settings.effective_admin_token):
         raise HTTPException(status_code=403, detail="Token admin invalide")
+
+    if db.is_enabled():
+        try:
+            async with db.pool().acquire() as con:
+                totals = await con.fetch(
+                    "SELECT client_id, SUM(prompts) AS p, SUM(tokenized) AS t, "
+                    "SUM(blocked) AS b FROM usage_counters GROUP BY client_id")
+                daily = await con.fetch(
+                    "SELECT client_id, day, prompts, tokenized, blocked "
+                    "FROM usage_counters "
+                    "WHERE day > CURRENT_DATE - $1::int "
+                    "ORDER BY day DESC, client_id", days)
+            clients = {r["client_id"]: {"prompts": int(r["p"]),
+                                        "tokenized": int(r["t"]),
+                                        "blocked": int(r["b"])}
+                       for r in totals}
+            return {
+                "persistent": True,
+                "clients": clients,
+                "total_prompts": sum(c["prompts"] for c in clients.values()),
+                "daily": [{"client_id": r["client_id"],
+                           "day": r["day"].isoformat(),
+                           "prompts": int(r["prompts"]),
+                           "tokenized": int(r["tokenized"]),
+                           "blocked": int(r["blocked"])} for r in daily],
+            }
+        except Exception:
+            pass  # repli memoire
+
     by_client = events.snapshot()["stats"]["by_client"]
-    return {"clients": by_client,
+    return {"persistent": False, "clients": by_client,
             "total_prompts": sum(c["prompts"] for c in by_client.values())}
 
 
