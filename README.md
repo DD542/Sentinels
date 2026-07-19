@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/DD542/sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/DD542/sentinel/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-128%20passed-brightgreen)](https://github.com/DD542/sentinel)
+[![Tests](https://img.shields.io/badge/tests-132%20passed-brightgreen)](https://github.com/DD542/sentinel)
 [![Benchmark](https://img.shields.io/badge/detection%20F1-100%25-brightgreen)](https://github.com/DD542/sentinel)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -70,7 +70,7 @@ Benchmark sur **89 prompts étiquetés** (`backend/tests/benchmark.py`) :
 | **Global** | **100 %** | **100 %** | **100 %** |
 
 **42 prompts innocents traités sans aucun faux positif.** Latence moyenne : ~100 ms/prompt.
-Suite de tests : **128 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
+Suite de tests : **132 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
 
 > Ces chiffres portent sur le jeu de test fourni, qui couvre les formats structurés, l'obfuscation (base64, hexadécimal, espacement) et les tentatives d'évasion. Ils ne constituent pas une garantie de détection exhaustive — voir [Limites connues](#limites-connues).
 
@@ -111,6 +111,8 @@ python tests/benchmark_external.py --rows 1000 --json
 **Registre Shadow AI.** Chaque appel sortant est tracé : quel fournisseur, quelle région, conforme UE ou non. Un argument de souveraineté directement exploitable en audit.
 
 ** Authentification multi-clients.** Chaque entreprise reçoit une clé API SENTINEL. Les clés sont stockées **hachées** (jamais en clair), révocables individuellement.
+
+** Livrables conformité.** Rapport d'audit **signé HMAC-SHA256** généré par l'API (HTML imprimable en PDF + JSON canonique re-vérifiable), [cartographie AI Act/RGPD article par article](docs/conformite-ai-act.md), et [registre de traitement art. 30 pré-rempli](docs/registre-rgpd.md). Le DPO reçoit des documents, pas des promesses.
 
 ** Observabilité Prometheus.** Endpoint `/metrics` : compteurs de décisions par action/type/couche, histogramme de latence du pipeline L0-L4, appels fournisseurs, rejets de quota, jauges temps réel sur la chaîne d'audit et le vault FPE. Prêt pour Grafana.
 
@@ -249,6 +251,8 @@ Le fournisseur reçoit `Hugo Blanc` et un IBAN factice valide. L'employé reçoi
 | `/corpus/stats` | GET | clé SENTINEL | Statistiques du corpus du client |
 | `/gateway/scan` | POST | clé SENTINEL | Analyser un texte sans le transmettre |
 | `/gateway/chat` | POST | clé SENTINEL | Pipeline complet vers un fournisseur IA |
+| `/compliance/report` | GET | token dashboard¹ | Rapport de conformité signé (HTML, imprimable PDF) |
+| `/compliance/report.json` | GET | token dashboard¹ | Rapport canonique signé HMAC (vérifiable) |
 | `/dashboard/stats` | GET | token dashboard¹ | Compteurs et événements récents |
 | `/dashboard/ws` | WS | token dashboard¹ | Flux temps réel |
 
@@ -259,7 +263,7 @@ Le fournisseur reçoit `Hugo Blanc` et un IBAN factice valide. L'employé reçoi
 ```bash
 cd backend
 
-pytest tests/ -v                                    # 128 tests
+pytest tests/ -v                                    # 132 tests
 pytest tests/ --cov=app --cov-report=term-missing   # couverture
 python tests/benchmark.py                           # métriques de détection (jeu interne)
 python tests/benchmark_external.py                  # benchmark externe (ai4privacy FR)
@@ -267,7 +271,7 @@ python tests/benchmark.py --verbose                 # détail par cas
 python tests/benchmark.py --json                    # sortie machine (CI)
 ```
 
-**Répartition des 128 tests :** détection L1 déterministe (22), normalisation L0 (13), vault FPE (16), chaîne d'audit (9), intégration moteur (9), API FastAPI (24), passerelle OpenAI-compatible et admin (9), révocation et rate-limiting (8), authentification dashboard (9), isolation multi-tenant (4), métriques Prometheus (5).
+**Répartition des 132 tests :** détection L1 déterministe (22), normalisation L0 (13), vault FPE (16), chaîne d'audit (9), intégration moteur (9), API FastAPI (24), passerelle OpenAI-compatible et admin (9), révocation et rate-limiting (8), authentification dashboard (9), isolation multi-tenant (4), métriques Prometheus (5), rapport de conformité (4).
 
 La CI GitHub Actions rejoue l'intégralité des tests et du benchmark sur Python 3.11 et 3.12 à chaque push.
 
@@ -297,13 +301,14 @@ Ces limites sont documentées **parce qu'elles existent dans toutes les solution
 - [x] Dashboard temps réel Vue 3 + WebSocket
 - [x] Registre Shadow AI (souveraineté des fournisseurs)
 - [x] Persistance Postgres validée (clés et audit survivent aux redémarrages)
-- [x] Suite de 128 tests, dont 59 tests d'intégration API (TestClient FastAPI)
+- [x] Suite de 132 tests, dont 63 tests d'intégration API (TestClient FastAPI)
 - [x] Endpoint compatible OpenAI : tous rôles assainis, réponse désanonymisée, `stream` en SSE simulé, `usage` réel remonté
 - [x] Token admin dédié (`ADMIN_TOKEN`), comparaison en temps constant
 - [x] Révocation de clés par client (`/admin/keys/revoke`, scellée dans l'audit) et rate-limiting par client (fenêtre glissante, `RATE_LIMIT_PER_MINUTE`)
 - [x] Authentification du dashboard et du WebSocket (`DASHBOARD_TOKEN`, sous-protocole WS, écran de connexion)
 - [x] Isolation multi-tenant du corpus L3 (le corpus d'un client n'influence jamais les scans d'un autre)
 - [x] Métriques Prometheus (`/metrics` : décisions par type/couche, latence du pipeline, chaîne d'audit, vault, 429)
+- [x] Livrables conformité : rapport d'audit signé HMAC (`/compliance/report`, imprimable en PDF), [mapping AI Act/RGPD](docs/conformite-ai-act.md), [registre art. 30 pré-rempli](docs/registre-rgpd.md)
 - [x] Benchmark de détection chiffré (précision / rappel / F1)
 - [x] Benchmark externe sur données tierces (ai4privacy FR, baseline Presidio, spans exacts)
 - [x] CI GitHub Actions (tests + benchmark sur Python 3.11 et 3.12)
@@ -349,7 +354,7 @@ Benchmark over **89 labelled prompts** (`backend/tests/benchmark.py`):
 | **Overall** | **100%** | **100%** | **100%** |
 
 **42 innocent prompts processed with zero false positives.** Average latency: ~100 ms/prompt.
-Test suite: **128 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
+Test suite: **132 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
 
 > These figures cover the provided test set (structured formats, base64/hex/spacing obfuscation, evasion attempts). They are not a guarantee of exhaustive detection — see [Known limitations](#known-limitations).
 
@@ -458,6 +463,8 @@ cd ../frontend && npm install && npm run dev    # dashboard
 | `/corpus/stats` | GET | SENTINEL key | Client's corpus statistics |
 | `/gateway/scan` | POST | SENTINEL key | Analyse text without forwarding |
 | `/gateway/chat` | POST | SENTINEL key | Full pipeline to an AI provider |
+| `/compliance/report` | GET | dashboard token¹ | Signed compliance report (HTML, print-to-PDF) |
+| `/compliance/report.json` | GET | dashboard token¹ | Canonical HMAC-signed report (verifiable) |
 | `/dashboard/stats` | GET | dashboard token¹ | Counters and recent events |
 | `/dashboard/ws` | WS | dashboard token¹ | Real-time stream |
 
@@ -467,7 +474,7 @@ cd ../frontend && npm install && npm run dev    # dashboard
 
 ```bash
 cd backend
-pytest tests/ -v              # 128 tests
+pytest tests/ -v              # 132 tests
 python tests/benchmark.py     # detection metrics (internal set)
 python tests/benchmark_external.py   # external benchmark (ai4privacy FR)
 ```
@@ -499,13 +506,14 @@ These limitations are documented **because they exist in every solution on the m
 - [x] Real-time Vue 3 + WebSocket dashboard
 - [x] Shadow AI registry (provider sovereignty)
 - [x] Postgres persistence validated (keys and audit survive restarts)
-- [x] 128-test suite, including 59 API integration tests (FastAPI TestClient)
+- [x] 132-test suite, including 63 API integration tests (FastAPI TestClient)
 - [x] OpenAI-compatible endpoint: all roles sanitised, response detokenised, simulated SSE `stream`, real `usage` passthrough
 - [x] Dedicated admin token (`ADMIN_TOKEN`), constant-time comparison
 - [x] Per-client key revocation (`/admin/keys/revoke`, sealed in the audit chain) and per-client rate limiting (sliding window, `RATE_LIMIT_PER_MINUTE`)
 - [x] Dashboard and WebSocket authentication (`DASHBOARD_TOKEN`, WS subprotocol, login screen)
 - [x] Multi-tenant isolation of the L3 corpus (one client's corpus never affects another's scans)
 - [x] Prometheus metrics (`/metrics`: decisions by type/layer, pipeline latency, audit chain, vault, 429s)
+- [x] Compliance deliverables: HMAC-signed audit report (`/compliance/report`, print-to-PDF), [AI Act/GDPR mapping](docs/conformite-ai-act.md), [pre-filled art. 30 record](docs/registre-rgpd.md)
 - [x] Quantified detection benchmark (precision / recall / F1)
 - [x] External benchmark on third-party data (ai4privacy FR, Presidio baseline, exact spans)
 - [x] GitHub Actions CI (tests + benchmark on Python 3.11 and 3.12)

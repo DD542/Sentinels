@@ -13,6 +13,7 @@ from .detection import l3_semantic
 from .gateway.proxy import router as gateway_router
 from .dashboard import router as dashboard_router
 from .gateway.openai_compat import router as openai_router
+from .compliance import router as compliance_router
 from .vault import fpe
 from .audit import chain
 from . import events
@@ -48,6 +49,7 @@ app.add_middleware(
 app.include_router(gateway_router)
 app.include_router(dashboard_router)
 app.include_router(openai_router)
+app.include_router(compliance_router)
 engine = DetectionEngine()
 
 
