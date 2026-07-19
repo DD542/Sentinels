@@ -2,7 +2,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -18,6 +18,7 @@ from .audit import chain
 from . import events
 from . import db
 from . import auth
+from . import metrics
 
 settings = get_settings()
 
@@ -73,6 +74,14 @@ class RevokeRequest(BaseModel):
 async def health() -> dict:
     return {"status": "ok", "service": settings.app_name,
             "persistence": db.is_enabled()}
+
+
+@app.get("/metrics")
+async def prometheus_metrics() -> Response:
+    """Metriques Prometheus (format texte). Concu pour un scrape interne :
+    a restreindre par pare-feu ou reverse-proxy en production."""
+    body, content_type = metrics.render()
+    return Response(content=body, media_type=content_type)
 
 
 @app.post("/admin/keys")

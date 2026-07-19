@@ -31,6 +31,8 @@ def check(client_id: str) -> None:
         window.popleft()
 
     if len(window) >= limit:
+        from . import metrics
+        metrics.RATE_LIMITED.inc()
         retry_after = max(1, int(_WINDOW_SECONDS - (now - window[0])) + 1)
         raise HTTPException(
             status_code=429,

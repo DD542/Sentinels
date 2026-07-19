@@ -3,6 +3,8 @@ import asyncio
 import time
 from collections import deque
 
+from . import metrics
+
 # Historique récent en mémoire (démo ; prod : Postgres + Redis pub/sub)
 _HISTORY: deque[dict] = deque(maxlen=200)
 _SUBSCRIBERS: set[asyncio.Queue] = set()
@@ -30,6 +32,7 @@ async def publish(event: dict) -> None:
     """Diffuse un événement à tous les abonnés WebSocket + historise."""
     event = {"ts": time.time(), **event}
     _HISTORY.appendleft(event)
+    metrics.record_event(event)
 
     kind = event.get("kind")
     if kind == "scan":

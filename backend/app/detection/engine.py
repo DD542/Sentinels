@@ -1,6 +1,8 @@
 from __future__ import annotations
 import asyncio
+import time
 from ..config import get_settings
+from .. import metrics
 from .types import DetectionResult, Finding, EntityType, Action
 from . import l1_deterministic
 from . import l0_normalize
@@ -22,6 +24,7 @@ class DetectionEngine:
                       client_id: str = "default") -> DetectionResult:
         """client_id cloisonne la couche L3 : chaque client n'est confronte
         qu'a SON corpus confidentiel (isolation multi-tenant)."""
+        t0 = time.perf_counter()
         result = DetectionResult()
 
         # L0 — révèle les données dissimulées (base64, hex, espacement).
@@ -57,6 +60,7 @@ class DetectionEngine:
                 if f.entity_type != EntityType.LOCATION
             ]
 
+        metrics.SCAN_DURATION.observe(time.perf_counter() - t0)
         return result
 
     async def _analyze_single(self, text: str, client_id: str) -> DetectionResult:
