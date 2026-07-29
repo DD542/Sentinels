@@ -10,6 +10,7 @@ from .config import get_settings
 from .detection.engine import DetectionEngine
 from .detection.types import Action, EntityType
 from .detection import l3_semantic
+from .detection import l2_ner
 from .gateway.proxy import router as gateway_router
 from .dashboard import router as dashboard_router
 from .gateway.openai_compat import router as openai_router
@@ -214,6 +215,7 @@ async def scan(req: ScanRequest,
                client_id: str = Depends(auth.verify_key)) -> dict:
     """Scan seul (sans transmission). Protégé par clé SENTINEL."""
     result = await engine.analyze(req.text, client_id)
+    detected_language = l2_ner.detect_language(req.text)
     await events.publish({"kind": "scan", "length": len(req.text),
                           "client": client_id})
 
@@ -247,6 +249,7 @@ async def scan(req: ScanRequest,
             "reason": "Contenu confidentiel de l'entreprise detecte",
             "method": leak.meta.get("method"),
             "confidence": round(leak.confidence, 3),
+            "language": detected_language,
             "evasion_flag": evasion_flag,
             "audit_hash": entry["hash"][:12],
             "audit_integrity": await chain.verify_integrity_async(),
@@ -304,6 +307,7 @@ async def scan(req: ScanRequest,
         "original_length": len(req.text),
         "sanitized": sanitized,
         "decisions": decisions,
+        "language": detected_language,
         "evasion_flag": evasion_flag,
         "audit_integrity": await chain.verify_integrity_async(),
     }

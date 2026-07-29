@@ -15,10 +15,12 @@ import hashlib
 import hmac
 import html
 import json
+import secrets
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 from .config import get_settings
 from .dashboard import require_dashboard_token
@@ -92,6 +94,37 @@ async def build_report() -> dict:
             dependencies=[Depends(require_dashboard_token)])
 async def report_json() -> dict:
     return await build_report()
+
+
+class ForgetRequest(BaseModel):
+    entity_id: str
+    admin_token: str
+
+
+@router.post("/compliance/forget")
+async def forget_entity(req: ForgetRequest) -> dict:
+    """Droit à l'effacement (RGPD art. 17) par crypto-shredding.
+
+    Détruit la clé de chiffrement de l'entité `entity_id` : le détail de
+    toutes ses entrées d'audit devient définitivement illisible, tandis
+    que la chaîne de hachage reste intègre (on prouve qu'un traitement a
+    eu lieu sans jamais pouvoir relire la donnée personnelle). L'effacement
+    est lui-même scellé dans le journal. Protégé par le token admin."""
+    if not secrets.compare_digest(req.admin_token,
+                                  settings.effective_admin_token):
+        raise HTTPException(status_code=403, detail="Token admin invalide")
+    affected = await chain.forget_async(req.entity_id)
+    # L'acte d'effacement est tracé (sous une entité distincte, non oubliée).
+    entry = await chain.append_async(
+        "ERASURE", "GDPR", f"erasure:{req.entity_id}",
+        {"target": req.entity_id, "entries_shredded": affected})
+    return {
+        "entity_id": req.entity_id,
+        "entries_shredded": affected,
+        "method": "crypto-shredding (Fernet DEK détruite)",
+        "audit_hash": entry["hash"][:12],
+        "chain_integrity": await chain.verify_integrity_async(),
+    }
 
 
 def _yesno(v: bool) -> str:

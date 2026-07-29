@@ -14,7 +14,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-detection = ["presidio-analyzer>=2.2", "spacy>=3.7", "pgvector>=0.3"]
+# Modèles NER multilingues (français, anglais, multilingue ~100 langues).
+# Absents : la détection L2 dégrade proprement sur le seul modèle présent.
+detection = [
+    "presidio-analyzer>=2.2", "spacy>=3.7", "pgvector>=0.3",
+    "fr_core_news_lg @ https://github.com/explosion/spacy-models/releases/download/fr_core_news_lg-3.8.0/fr_core_news_lg-3.8.0-py3-none-any.whl",
+    "en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
+    "xx_ent_wiki_sm @ https://github.com/explosion/spacy-models/releases/download/xx_ent_wiki_sm-3.8.0/xx_ent_wiki_sm-3.8.0-py3-none-any.whl",
+]
 embeddings = ["sentence-transformers>=3.0"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-cov>=5.0"]
 

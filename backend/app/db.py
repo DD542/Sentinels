@@ -66,6 +66,16 @@ async def init_db() -> None:
                     hash        TEXT NOT NULL
                 );
 
+                -- Keyring de la chaine d'audit : une cle de donnees (DEK)
+                -- ALEATOIRE par entite, stockee ENVELOPPEE par la cle maitre.
+                -- Supprimer une ligne = crypto-shredding (RGPD art. 17) :
+                -- le detail devient illisible, la preuve d'existence reste.
+                CREATE TABLE IF NOT EXISTS audit_keys (
+                    entity_id  TEXT PRIMARY KEY,
+                    wrapped    TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+
                 -- Metering par client et par jour : base de facturation,
                 -- survit aux redemarrages.
                 CREATE TABLE IF NOT EXISTS usage_counters (

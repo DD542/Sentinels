@@ -11,6 +11,28 @@ function submitToken() {
   tokenInput.value = "";
 }
 
+/* ---------- Navigation : onglets + plage temporelle ---------- */
+const activeTab = ref("realtime"); // realtime | compliance | corpus
+
+const RANGES = { "24h": 86400, "7d": 604800, "30d": 2592000, session: null };
+const range = ref("session");
+const RANGE_LABELS = { "24h": "24 heures", session: "Session", "7d": "7 jours", "30d": "30 jours" };
+
+// La plage filtre le flux de décisions par horodatage (source de vérité
+// temps réel). "Session" = tout ce qui a été observé depuis la connexion.
+const filteredFeed = computed(() => {
+  const win = RANGES[range.value];
+  if (!win) return feed.value;
+  const since = Date.now() / 1000 - win;
+  return feed.value.filter((e) => e.ts >= since);
+});
+
+/* ---------- Langue détectée (multilingue) ---------- */
+const LANG_LABELS = { fr: "Français", en: "Anglais", other: "Autre langue" };
+function langLabel(code) {
+  return LANG_LABELS[code] || "Indéterminée";
+}
+
 /* ---------- Playground : tester la passerelle depuis le dashboard ---------- */
 const scanText = ref(
   "Rédige une relance pour Jean Dupont concernant le virement vers FR7610107001011234567890129"
@@ -48,6 +70,120 @@ async function runScan() {
   } finally {
     scanning.value = false;
   }
+}
+
+/* ---------- En-tête : documentation + rapport d'audit signé ---------- */
+function openDocs() {
+  window.open(`${API_BASE}/docs`, "_blank", "noopener");
+}
+
+const reportBusy = ref(false);
+const reportError = ref("");
+async function openAuditReport() {
+  reportBusy.value = true;
+  reportError.value = "";
+  try {
+    const token = localStorage.getItem("sentinel_dashboard_token") || "";
+    const r = await fetch(`${API_BASE}/compliance/report`, {
+      headers: token ? { "X-Dashboard-Token": token } : {},
+    });
+    if (!r.ok) {
+      reportError.value = "Rapport indisponible (token dashboard requis).";
+      return;
+    }
+    // On ouvre le HTML signé via un blob : jamais de token dans l'URL.
+    const html = await r.text();
+    const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+    window.open(url, "_blank", "noopener");
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (_) {
+    reportError.value = "Backend injoignable.";
+  } finally {
+    reportBusy.value = false;
+  }
+}
+
+/* ---------- Conformité : effacement RGPD (crypto-shredding) ---------- */
+const forgetId = ref("");
+const forgetToken = ref("");
+const forgetBusy = ref(false);
+const forgetResult = ref(null);
+const forgetError = ref("");
+async function forgetEntity() {
+  if (!forgetId.value.trim() || forgetBusy.value) return;
+  forgetBusy.value = true;
+  forgetError.value = "";
+  forgetResult.value = null;
+  try {
+    const r = await fetch(`${API_BASE}/compliance/forget`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        entity_id: forgetId.value.trim(),
+        admin_token: forgetToken.value.trim(),
+      }),
+    });
+    if (r.status === 403) {
+      forgetError.value = "Token admin invalide.";
+      return;
+    }
+    forgetResult.value = await r.json();
+  } catch (_) {
+    forgetError.value = "Backend injoignable.";
+  } finally {
+    forgetBusy.value = false;
+  }
+}
+
+/* ---------- Corpus : ingestion + statistiques (protection anti-fuite) ---------- */
+const corpusDocId = ref("");
+const corpusText = ref("");
+const corpusBusy = ref(false);
+const corpusResult = ref(null);
+const corpusError = ref("");
+const corpusStats = ref(null);
+
+function corpusHeaders() {
+  const h = { "Content-Type": "application/json" };
+  const k = scanKey.value.trim();
+  if (k) h["X-SENTINEL-Key"] = k;
+  return h;
+}
+
+async function ingestDoc() {
+  if (!corpusDocId.value.trim() || !corpusText.value.trim() || corpusBusy.value) return;
+  corpusBusy.value = true;
+  corpusError.value = "";
+  corpusResult.value = null;
+  try {
+    const r = await fetch(`${API_BASE}/corpus/ingest`, {
+      method: "POST",
+      headers: corpusHeaders(),
+      body: JSON.stringify({ doc_id: corpusDocId.value.trim(), text: corpusText.value }),
+    });
+    if (r.status === 401) {
+      corpusError.value = "Clé SENTINEL requise (champ du playground Temps réel).";
+      return;
+    }
+    corpusResult.value = await r.json();
+    await loadCorpusStats();
+  } catch (_) {
+    corpusError.value = "Backend injoignable.";
+  } finally {
+    corpusBusy.value = false;
+  }
+}
+
+async function loadCorpusStats() {
+  try {
+    const r = await fetch(`${API_BASE}/corpus/stats`, { headers: corpusHeaders() });
+    if (r.ok) corpusStats.value = await r.json();
+  } catch (_) { /* silencieux */ }
+}
+
+function goCorpus() {
+  activeTab.value = "corpus";
+  loadCorpusStats();
 }
 
 const DONUT_COLORS = ["#f59a23", "#ffbe45", "#ffd98a", "#dd820c", "#b96a05", "#8f5304"];
@@ -115,6 +251,7 @@ function labelAction(a) {
   if (a === "TOKENIZE") return "Anonymisé";
   if (a === "BLOCK") return "Bloqué";
   if (a === "BLOCK_REQUEST") return "Requête rejetée";
+  if (a === "EVASION_FLAG") return "Contournement";
   return a;
 }
 function ts(t) {
@@ -146,35 +283,43 @@ function ts(t) {
         <div class="sub">Surveillance temps réel des flux IA de l'entreprise</div>
       </div>
       <div class="header-right">
-        <span>Documentation</span>
-        <span>Audit</span>
+        <button class="link-btn" @click="openDocs">Documentation</button>
+        <button class="link-btn" @click="openAuditReport" :disabled="reportBusy">
+          {{ reportBusy ? "Ouverture…" : "Rapport d'audit" }}
+        </button>
         <span class="status">
           <span class="dot" :class="connected ? 'live' : 'down'"></span>
           {{ connected ? "Flux connecté" : "Reconnexion..." }}
         </span>
       </div>
     </div>
+    <div v-if="reportError" class="inline-error">{{ reportError }}</div>
 
     <div class="toolbar">
       <div class="pills">
-        <button class="pill active">Temps réel</button>
-        <button class="pill">Conformité</button>
-        <button class="pill">Corpus</button>
+        <button class="pill" :class="{ active: activeTab === 'realtime' }" @click="activeTab = 'realtime'">Temps réel</button>
+        <button class="pill" :class="{ active: activeTab === 'compliance' }" @click="activeTab = 'compliance'">Conformité</button>
+        <button class="pill" :class="{ active: activeTab === 'corpus' }" @click="goCorpus">Corpus</button>
       </div>
-      <div class="ranges">
-        <button class="range">24 heures</button>
-        <button class="range active">Session</button>
-        <button class="range">7 jours</button>
-        <button class="range">30 jours</button>
+      <div v-if="activeTab === 'realtime'" class="ranges">
+        <button
+          v-for="key in ['24h', 'session', '7d', '30d']"
+          :key="key"
+          class="range"
+          :class="{ active: range === key }"
+          @click="range = key"
+        >{{ RANGE_LABELS[key] }}</button>
       </div>
     </div>
 
+    <!-- ============ ONGLET TEMPS RÉEL ============ -->
+    <template v-if="activeTab === 'realtime'">
     <div class="panel playground">
-      <h2>Tester la passerelle</h2>
+      <h2>Tester la passerelle <span class="hint">— dans n'importe quelle langue</span></h2>
       <textarea
         v-model="scanText"
         rows="3"
-        placeholder="Collez un prompt contenant des données sensibles (IBAN, nom, clé API…)"
+        placeholder="Collez un prompt (FR, EN, ES, DE…) contenant des données sensibles (IBAN, nom, clé API…)"
       ></textarea>
       <div class="playground-row">
         <input
@@ -188,6 +333,9 @@ function ts(t) {
       </div>
       <div v-if="scanError" class="playground-error">{{ scanError }}</div>
       <template v-if="scanResult">
+        <div v-if="scanResult.language" class="playground-lang">
+          Langue détectée : <strong>{{ langLabel(scanResult.language) }}</strong>
+        </div>
         <div v-if="scanResult.blocked" class="playground-blocked">
           Requête bloquée — {{ scanResult.reason }}
           <span class="mono">({{ scanResult.audit_hash }})</span>
@@ -297,13 +445,13 @@ function ts(t) {
 
     <div class="grid-bottom">
       <div class="panel">
-        <h2>Flux des décisions</h2>
-        <table v-if="feed.length">
+        <h2>Flux des décisions <span class="hint">— {{ RANGE_LABELS[range] }}</span></h2>
+        <table v-if="filteredFeed.length">
           <thead>
             <tr><th>Heure</th><th>Type</th><th>Action</th><th>Couche</th><th>Audit</th></tr>
           </thead>
           <tbody>
-            <tr v-for="(e, i) in feed.slice(0, 9)" :key="i">
+            <tr v-for="(e, i) in filteredFeed.slice(0, 9)" :key="i">
               <td class="num">{{ ts(e.ts) }}</td>
               <td><span class="badge">{{ e.entity_type }}</span></td>
               <td>
@@ -316,7 +464,7 @@ function ts(t) {
             </tr>
           </tbody>
         </table>
-        <div v-else class="empty">En attente de trafic sur la passerelle.</div>
+        <div v-else class="empty">Aucune décision sur la plage « {{ RANGE_LABELS[range] }} ».</div>
       </div>
 
       <div class="panel">
@@ -352,6 +500,99 @@ function ts(t) {
         <div v-else class="empty">Aucune détection pour l'instant.</div>
       </div>
     </div>
+    </template>
+
+    <!-- ============ ONGLET CONFORMITÉ ============ -->
+    <template v-else-if="activeTab === 'compliance'">
+      <div class="grid-mid">
+        <div class="panel">
+          <h2>Rapport de conformité signé</h2>
+          <p class="panel-text">
+            État canonique de la passerelle (activité, registre Shadow AI,
+            intégrité du journal, posture de sécurité), signé HMAC-SHA256 et
+            imprimable en PDF. Destiné au DPO / RSSI, joignable à un dossier
+            d'audit AI Act ou RGPD.
+          </p>
+          <button class="primary" @click="openAuditReport" :disabled="reportBusy">
+            {{ reportBusy ? "Ouverture…" : "Ouvrir le rapport signé" }}
+          </button>
+          <div v-if="reportError" class="playground-error">{{ reportError }}</div>
+          <div class="audit-line">
+            <span class="dot" :class="auditIntegrity ? 'live' : 'down'"></span>
+            Chaîne d'audit :
+            <span :class="auditIntegrity ? 'ok' : 'ko'">
+              {{ auditIntegrity ? "vérifiée, inviolée" : "COMPROMISE" }}
+            </span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Droit à l'effacement — RGPD art. 17</h2>
+          <p class="panel-text">
+            Efface une personne concernée par <strong>crypto-shredding</strong> :
+            la clé de chiffrement de l'entité est détruite, rendant le détail
+            de son journal définitivement illisible — tout en préservant la
+            preuve d'inviolabilité (chaîne de hachage intacte). Identifiant
+            visible dans le flux des décisions (ex. <code>PERSON:42</code>).
+          </p>
+          <input v-model="forgetId" class="field" placeholder="entity_id (ex. PERSON:42)" />
+          <input v-model="forgetToken" type="password" class="field" placeholder="Token admin" />
+          <button class="danger" @click="forgetEntity" :disabled="forgetBusy">
+            {{ forgetBusy ? "Effacement…" : "Effacer définitivement" }}
+          </button>
+          <div v-if="forgetError" class="playground-error">{{ forgetError }}</div>
+          <div v-if="forgetResult" class="playground-blocked ok-block">
+            {{ forgetResult.entries_shredded }} entrée(s) rendue(s) illisible(s) ·
+            {{ forgetResult.method }} ·
+            chaîne {{ forgetResult.chain_integrity ? "intègre" : "COMPROMISE" }}
+            <span class="mono">({{ forgetResult.audit_hash }})</span>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ============ ONGLET CORPUS ============ -->
+    <template v-else-if="activeTab === 'corpus'">
+      <div class="grid-mid">
+        <div class="panel">
+          <h2>Corpus confidentiel — protection anti-fuite</h2>
+          <p class="panel-text">
+            Indexez vos documents sensibles (contrats, code source, notes
+            internes). SENTINEL bloque ensuite tout prompt qui tenterait
+            d'exfiltrer leur contenu vers une IA externe. Corpus
+            <strong>cloisonné par client</strong> (isolation multi-tenant).
+            Nécessite une clé SENTINEL (renseignée dans l'onglet Temps réel).
+          </p>
+          <input v-model="corpusDocId" class="field" placeholder="Identifiant du document (ex. contrat-2026-004)" />
+          <textarea v-model="corpusText" rows="4" class="field" placeholder="Collez le texte confidentiel à protéger…"></textarea>
+          <button class="primary" @click="ingestDoc" :disabled="corpusBusy">
+            {{ corpusBusy ? "Indexation…" : "Indexer le document" }}
+          </button>
+          <div v-if="corpusError" class="playground-error">{{ corpusError }}</div>
+          <div v-if="corpusResult" class="playground-blocked ok-block">
+            Document indexé — {{ corpusResult.chunks }} segment(s),
+            {{ corpusResult.shingles }} empreinte(s).
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>État du corpus</h2>
+          <button class="primary ghost" @click="loadCorpusStats">Rafraîchir</button>
+          <table v-if="corpusStats" class="kv">
+            <tbody>
+              <tr><td>Empreintes indexées (shingles)</td><td class="num">{{ corpusStats.shingles_indexed ?? "—" }}</td></tr>
+              <tr><td>Segments (embeddings)</td><td class="num">{{ corpusStats.embedded_chunks ?? "—" }}</td></tr>
+              <tr><td>Recherche sémantique active</td><td class="num">{{ corpusStats.embeddings_active ? "Oui" : "Non (repli empreintes)" }}</td></tr>
+            </tbody>
+          </table>
+          <div v-else class="empty">Renseignez une clé SENTINEL puis rafraîchissez.</div>
+          <div class="audit-line">
+            <span class="dot live"></span>
+            Chaque ingestion est scellée dans le journal d'audit.
+          </div>
+        </div>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -391,6 +632,62 @@ function ts(t) {
 }
 .auth-card button:hover { background: #dd820c; }
 
+/* ---------- En-tête : boutons-liens ---------- */
+.link-btn {
+  background: none;
+  border: none;
+  color: #52525b;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
+}
+.link-btn:hover { color: #dd820c; text-decoration: underline; }
+.link-btn:disabled { opacity: 0.5; cursor: wait; }
+.inline-error {
+  color: #b02a37; font-size: 13px; margin: 4px 0 0;
+}
+
+/* ---------- Onglets & plages actifs ---------- */
+.pill { cursor: pointer; }
+.range { cursor: pointer; }
+
+.hint { color: #a1a1aa; font-weight: 400; font-size: 13px; }
+
+/* ---------- Panneaux Conformité / Corpus ---------- */
+.panel-text {
+  color: #52525b; font-size: 14px; line-height: 1.55; margin: 0 0 14px;
+}
+.field {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 12px;
+  border: 1px solid #d4d4d8;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 14px;
+  margin-bottom: 8px;
+  resize: vertical;
+}
+button.primary, button.danger {
+  padding: 9px 20px;
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 14px;
+}
+button.primary { background: #f59a23; }
+button.primary:hover { background: #dd820c; }
+button.primary.ghost { background: #fff; color: #dd820c; border: 1px solid #f0c48a; }
+button.danger { background: #b02a37; }
+button.danger:hover { background: #8f1f2b; }
+button.primary:disabled, button.danger:disabled { opacity: 0.6; cursor: wait; }
+
+table.kv td { padding: 8px 10px; border-bottom: 1px solid #f0f0f1; }
+.ok-block { background: #eafaf0 !important; border-color: #a7e0bf !important; color: #157347 !important; }
+
 /* ---------- Playground ---------- */
 .playground { margin-bottom: 16px; }
 .playground textarea {
@@ -424,6 +721,9 @@ function ts(t) {
 .playground-row button:disabled { opacity: 0.6; cursor: wait; }
 .playground-error {
   margin-top: 10px; color: #b02a37; font-size: 14px;
+}
+.playground-lang {
+  margin-top: 10px; font-size: 13px; color: #52525b;
 }
 .playground-blocked {
   margin-top: 10px;

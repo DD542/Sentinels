@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/DD542/sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/DD542/sentinel/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-145%20passed-brightgreen)](https://github.com/DD542/sentinel)
+[![Tests](https://img.shields.io/badge/tests-166%20passed-brightgreen)](https://github.com/DD542/sentinel)
 [![Benchmark](https://img.shields.io/badge/detection%20F1-100%25-brightgreen)](https://github.com/DD542/sentinel)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -70,7 +70,7 @@ Benchmark sur **89 prompts étiquetés** (`backend/tests/benchmark.py`) :
 | **Global** | **100 %** | **100 %** | **100 %** |
 
 **42 prompts innocents traités sans aucun faux positif.** Latence moyenne : ~100 ms/prompt.
-Suite de tests : **145 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
+Suite de tests : **166 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
 
 > Ces chiffres portent sur le jeu de test fourni, qui couvre les formats structurés, l'obfuscation (base64, hexadécimal, espacement) et les tentatives d'évasion. Ils ne constituent pas une garantie de détection exhaustive — voir [Limites connues](#limites-connues).
 
@@ -264,7 +264,7 @@ Le fournisseur reçoit `Hugo Blanc` et un IBAN factice valide. L'employé reçoi
 ```bash
 cd backend
 
-pytest tests/ -v                                    # 145 tests
+pytest tests/ -v                                    # 166 tests
 pytest tests/ --cov=app --cov-report=term-missing   # couverture
 python tests/benchmark.py                           # métriques de détection (jeu interne)
 python tests/benchmark_external.py                  # benchmark externe (ai4privacy FR)
@@ -272,7 +272,7 @@ python tests/benchmark.py --verbose                 # détail par cas
 python tests/benchmark.py --json                    # sortie machine (CI)
 ```
 
-**Répartition des 145 tests :** détection L1 déterministe (22), normalisation L0 (13), vault FPE (16), chaîne d'audit (9), intégration moteur (9), API FastAPI (24), passerelle OpenAI-compatible et admin (9), révocation et rate-limiting (8), authentification dashboard (9), isolation multi-tenant (4), métriques Prometheus (5), rapport de conformité (4), logs structurés (5), metering et mode strict (4), persistance du metering (4).
+**Répartition des 166 tests :** détection L1 déterministe (22), normalisation L0 (13), vault FPE (16), chaîne d'audit (9), intégration moteur (9), API FastAPI (24), passerelle OpenAI-compatible et admin (9), révocation et rate-limiting (8), authentification dashboard (9), isolation multi-tenant (4), métriques Prometheus (5), rapport de conformité (4), logs structurés (5), metering et mode strict (4), persistance du metering (4), chiffrement Fernet et crypto-shredding (11), détection multilingue (10).
 
 La CI GitHub Actions rejoue l'intégralité des tests et du benchmark sur Python 3.11 et 3.12 à chaque push.
 
@@ -283,7 +283,7 @@ La CI GitHub Actions rejoue l'intégralité des tests et du benchmark sur Python
 - **Données jamais apprises.** La couche L3 protège les documents que vous lui avez ingérés. Un secret inédit et non structuré (« le projet Chimère sort mardi ») passe.
 - **Chiffrement fort et stéganographie.** L0 révèle base64, hex et espacement. Une donnée réellement chiffrée reste opaque.
 - **Réponses en streaming.** Le streaming est servi en SSE simulé : la réponse est obtenue et désanonymisée en entier, puis renvoyée en chunks (compatible clients OpenAI, aucun token coupé). Le vrai streaming token-par-token du fournisseur, avec désanonymisation incrémentale, reste à venir.
-- **Langue.** Les couches L2 et L3 sont calibrées pour le français. L'anglais et les autres langues ne sont pas couverts.
+- **Langue.** La détection L2 est **multilingue** : le français passe par Presidio (qualité + garde-fous), l'anglais par un modèle dédié, et toute autre langue par un modèle multilingue (~100 langues, noms et lieux). La détection de langue est automatique. La couche L3 (corpus confidentiel) reste, elle, calibrée pour le français.
 - **Récupération floue.** Si une réponse contient plusieurs IBAN très proches du token corrompu, la restauration pourrait viser la mauvaise cible. Le seuil de similarité et le filtre pays limitent fortement ce cas, sans l'éliminer.
 - **Collisions FPE.** Théoriquement possibles, en pratique négligeables avec HMAC-SHA256.
 
@@ -302,7 +302,7 @@ Ces limites sont documentées **parce qu'elles existent dans toutes les solution
 - [x] Dashboard temps réel Vue 3 + WebSocket
 - [x] Registre Shadow AI (souveraineté des fournisseurs)
 - [x] Persistance Postgres validée (clés et audit survivent aux redémarrages)
-- [x] Suite de 145 tests, dont 66 tests d'intégration API (TestClient FastAPI)
+- [x] Suite de 166 tests, dont 66 tests d'intégration API (TestClient FastAPI)
 - [x] Endpoint compatible OpenAI : tous rôles assainis, réponse désanonymisée, `stream` en SSE simulé, `usage` réel remonté
 - [x] Token admin dédié (`ADMIN_TOKEN`), comparaison en temps constant
 - [x] Révocation de clés par client (`/admin/keys/revoke`, scellée dans l'audit) et rate-limiting par client (fenêtre glissante, `RATE_LIMIT_PER_MINUTE`)
@@ -317,11 +317,12 @@ Ces limites sont documentées **parce qu'elles existent dans toutes les solution
 - [x] Benchmark de détection chiffré (précision / rappel / F1)
 - [x] Benchmark externe sur données tierces (ai4privacy FR, baseline Presidio, spans exacts)
 - [x] CI GitHub Actions (tests + benchmark sur Python 3.11 et 3.12)
+- [x] Détection multilingue (FR/EN + ~100 langues via modèle multilingue, détection auto)
+- [x] Chiffrement fort du journal (Fernet AES-128 + HMAC) et effacement RGPD par crypto-shredding (`/compliance/forget`)
 
 ** À venir**
 
 - [ ] Streaming natif du fournisseur (désanonymisation incrémentale)
-- [ ] Détection multilingue (EN, ES, DE)
 - [ ] Pilier 2 — **Audit AI Act** : agents RAG sur le texte réglementaire, classification de risque, rapport de conformité
 
 ### Licence
@@ -359,7 +360,7 @@ Benchmark over **89 labelled prompts** (`backend/tests/benchmark.py`):
 | **Overall** | **100%** | **100%** | **100%** |
 
 **42 innocent prompts processed with zero false positives.** Average latency: ~100 ms/prompt.
-Test suite: **145 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
+Test suite: **166 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
 
 > These figures cover the provided test set (structured formats, base64/hex/spacing obfuscation, evasion attempts). They are not a guarantee of exhaustive detection — see [Known limitations](#known-limitations).
 
@@ -480,7 +481,7 @@ cd ../frontend && npm install && npm run dev    # dashboard
 
 ```bash
 cd backend
-pytest tests/ -v              # 145 tests
+pytest tests/ -v              # 166 tests
 python tests/benchmark.py     # detection metrics (internal set)
 python tests/benchmark_external.py   # external benchmark (ai4privacy FR)
 ```
@@ -494,7 +495,7 @@ CI runs the full test suite and benchmark on Python 3.11 and 3.12 on every push.
 - **Never-seen data.** Layer L3 protects the documents you ingested. A novel, unstructured secret slips through.
 - **Strong encryption and steganography.** L0 reveals base64, hex and spacing. Genuinely encrypted data stays opaque.
 - **Streaming responses.** Streaming is served as simulated SSE: the response is fetched and detokenised in full, then sent in chunks (OpenAI-client compatible, no token ever split). True incremental provider streaming is still to come.
-- **Language.** L2 and L3 are tuned for French. Other languages are not covered.
+- **Language.** L2 detection is **multilingual**: French goes through Presidio (quality + guardrails), English through a dedicated model, and any other language through a multilingual model (~100 languages, names and locations). Language is detected automatically. Layer L3 (confidential corpus) is still tuned for French.
 - **Fuzzy recovery.** With several near-identical IBANs in one response, restoration could target the wrong one.
 
 These limitations are documented **because they exist in every solution on the market**, including those that don't disclose them.
@@ -512,7 +513,7 @@ These limitations are documented **because they exist in every solution on the m
 - [x] Real-time Vue 3 + WebSocket dashboard
 - [x] Shadow AI registry (provider sovereignty)
 - [x] Postgres persistence validated (keys and audit survive restarts)
-- [x] 145-test suite, including 66 API integration tests (FastAPI TestClient)
+- [x] 166-test suite, including 66 API integration tests (FastAPI TestClient)
 - [x] OpenAI-compatible endpoint: all roles sanitised, response detokenised, simulated SSE `stream`, real `usage` passthrough
 - [x] Dedicated admin token (`ADMIN_TOKEN`), constant-time comparison
 - [x] Per-client key revocation (`/admin/keys/revoke`, sealed in the audit chain) and per-client rate limiting (sliding window, `RATE_LIMIT_PER_MINUTE`)
@@ -527,11 +528,12 @@ These limitations are documented **because they exist in every solution on the m
 - [x] Quantified detection benchmark (precision / recall / F1)
 - [x] External benchmark on third-party data (ai4privacy FR, Presidio baseline, exact spans)
 - [x] GitHub Actions CI (tests + benchmark on Python 3.11 and 3.12)
+- [x] Multilingual detection (FR/EN + ~100 languages via a multilingual model, auto language detection)
+- [x] Strong audit-log encryption (Fernet AES-128 + HMAC) and GDPR erasure via crypto-shredding (`/compliance/forget`)
 
 ** Next**
 
 - [ ] Native provider streaming (incremental detokenisation)
-- [ ] Multilingual detection (EN, ES, DE)
 - [ ] Pillar 2 — **AI Act audit**: RAG agents over the regulation, risk classification, compliance reporting
 
 ### License
