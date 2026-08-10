@@ -28,9 +28,9 @@ explicite et non négociable :
 
 | Table | Contenu | Chiffrement | Conservation |
 |:---|:---|:---|:---|
-| `audit_chain` | Une ligne par décision : horodatage, action, type d'entité, hash chaîné. Le *détail* (dont la valeur détectée) est dans un champ chiffré. | **Fernet** (AES-128-CBC + HMAC), une clé de données distincte **par entité** | Permanente par défaut — à aligner sur votre politique (recommandation : ≥ 6 mois, AI Act art. 26(6)) |
+| `audit_chain` | Une ligne par décision : horodatage, action, type d'entité, hash chaîné. Le *détail* (dont la valeur détectée) est dans un champ chiffré. | **Fernet** (AES-128-CBC + HMAC), une clé de données distincte **par entité** | Les lignes sont conservées (la chaîne doit rester vérifiable) ; au-delà d'`AUDIT_RETENTION_DAYS` la **clé est détruite** et le détail devient illisible |
 | `audit_keys` | La clé de chiffrement de chaque entité, elle-même **enveloppée** par une clé maître dérivée d'`AUDIT_HMAC_KEY` | Fernet (KEK à domaine séparé) | Tant que l'entité n'est pas oubliée |
-| `vault` | La correspondance token factice → valeur réelle, nécessaire pour restaurer la vraie donnée dans la réponse | Fernet (clé dérivée de `VAULT_MASTER_KEY`) | **`VAULT_TTL_HOURS`, 24 h par défaut** — purge effective au démarrage |
+| `vault` | La correspondance token factice → valeur réelle, nécessaire pour restaurer la vraie donnée dans la réponse | Fernet (clé dérivée de `VAULT_MASTER_KEY`) | **`VAULT_TTL_HOURS`, 24 h par défaut** — lignes supprimées par la purge périodique |
 | `api_keys` | Empreinte HMAC de chaque clé client, statut actif/révoqué | Non réversible par construction | Permanente (révocation = passage à inactif) |
 | `usage_counters` | Agrégats par client et par jour : nombre de prompts, tokenisations, blocages | Aucun (ce sont des compteurs, pas des données personnelles) | Permanente (facturation) |
 | `provider_counters` | Nombre d'appels par fournisseur | Aucun | Permanente |
@@ -69,6 +69,28 @@ en *rendant la donnée personnelle irrécupérable* (RGPD art. 17). L'acte
 d'effacement est lui-même scellé dans le journal, sous une entité
 distincte, avec son horodatage et son hash.
 
+## L'application des durées de conservation
+
+Une durée annoncée mais jamais appliquée est une non-conformité
+(RGPD art. 5(1)(e)). Une passe de purge tourne donc **périodiquement**
+(`PURGE_INTERVAL_MINUTES`, 60 min par défaut, plus une passe au
+démarrage) et reste déclenchable à la demande :
+
+```bash
+curl -X POST http://<sentinel>/admin/maintenance/purge   -H "X-Admin-Token: <ADMIN_TOKEN>"
+```
+
+Elle traite les deux stocks de façon **volontairement dissymétrique** :
+
+| Stock | Traitement | Pourquoi |
+|:---|:---|:---|
+| **Vault** | Les jetons expirés sont **supprimés** | Ils n'ont qu'une utilité fonctionnelle (restaurer une valeur dans une réponse), aucune valeur probante |
+| **Audit** | Les entrées sont **conservées**, leur **clé est détruite** | Supprimer une entrée casserait le chaînage de hachage et donc la preuve (AI Act art. 26(6)). En détruisant la clé, la preuve qu'un traitement a eu lieu demeure et la donnée personnelle devient illisible (RGPD art. 5(1)(e)) |
+
+C'est le même mécanisme que l'effacement à la demande, appliqué
+automatiquement par l'écoulement du temps : **on garde la preuve, on
+perd la donnée.**
+
 ## Comment le vérifier vous-même
 
 | Affirmation | Vérification |
@@ -79,15 +101,17 @@ distincte, avec son horodatage et son hash.
 | Rien de sensible dans les logs | `backend/tests/test_logs.py` |
 | La rétention du vault est appliquée | `backend/tests/test_vault_persistence.py` |
 | Le corpus ne contient aucun texte | `backend/tests/test_corpus_persistence.py` |
+| La rétention est réellement appliquée | `POST /admin/maintenance/purge` renvoie le décompte ; `backend/tests/test_maintenance.py` vérifie que l'intégrité survit à la purge |
 
 ## Limites, en toute transparence
 
-- **La rétention de l'audit est illimitée par défaut.** Aucune purge
-  automatique du journal : à définir selon votre politique (une purge
-  périodique est à mettre en place côté exploitation).
-- **La purge du vault a lieu au démarrage.** Les tokens expirés ne sont
-  plus utilisables (filtrés à la lecture) mais leurs lignes restent
-  jusqu'au prochain redémarrage. Une purge périodique est prévue.
+- **La rétention de l'audit est illimitée par défaut** (`AUDIT_RETENTION_DAYS=0`) :
+  c'est un choix explicite à poser avec votre DPO, pas un défaut que
+  nous devrions décider à votre place.
+- **L'effacement cible un identifiant technique d'entité** (`IBAN:12`),
+  pas une personne. Répondre à une demande d'effacement portant sur un
+  individu précis suppose de retrouver les entités concernées : une
+  indexation par personne concernée n'est pas encore fournie.
 - **Sans `DATABASE_URL`, rien n'est persisté** : mode démonstration, tout
   vit en mémoire. Utilisez `STRICT_MODE=true` en production pour refuser
   ce mode dégradé.

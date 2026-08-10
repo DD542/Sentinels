@@ -225,6 +225,47 @@ async def forget_async(entity_id: str) -> int:
     return sum(1 for e in _CHAIN if e["entity_id"] == entity_id)
 
 
+async def purge_expired_keys(retention_days: int) -> int:
+    """Applique la durée de conservation du journal, par crypto-shredding.
+
+    Les entrées d'audit ne sont **jamais supprimées** : la chaîne de
+    hachage doit rester vérifiable de bout en bout (AI Act art. 26(6)),
+    et une suppression casserait le chaînage. C'est leur clé de
+    déchiffrement qui est détruite au-delà de la rétention : le détail
+    devient illisible (RGPD art. 5(1)(e), limitation de conservation)
+    alors que la preuve qu'un traitement a eu lieu demeure.
+
+    Une entité est expirée quand sa **dernière** entrée dépasse la durée.
+    Renvoie le nombre d'entités dont la clé a été détruite."""
+    if retention_days <= 0 or not db.is_enabled():
+        return 0
+    cutoff = time.time() - retention_days * 86400
+    try:
+        async with db.pool().acquire() as con:
+            rows = await con.fetch(
+                "DELETE FROM audit_keys WHERE entity_id IN ("
+                "  SELECT entity_id FROM audit_chain GROUP BY entity_id"
+                "  HAVING MAX(ts) < $1"
+                ") RETURNING entity_id", cutoff)
+    except Exception as e:
+        _log.warning("purge des cles d'audit echouee", extra={
+            "event": "db_error", "op": "purge_keys",
+            "error": f"{type(e).__name__}: {e}"})
+        return 0
+
+    # On vide le cache, sans marquer l'entité comme oubliée : les
+    # identifiants d'entité sont réutilisés d'un prompt à l'autre, et une
+    # donnée future n'a pas à être privée de clé. Les anciennes entrées
+    # restent illisibles, leur DEK ayant disparu.
+    for r in rows:
+        crypto._KEYRING.pop(r["entity_id"], None)
+    if rows:
+        _log.info("cles d'audit expirees detruites", extra={
+            "event": "audit_key_purge", "entities": len(rows),
+            "retention_days": retention_days})
+    return len(rows)
+
+
 async def verify_integrity_async() -> bool:
     """Vérifie la chaîne. En mode DB, relit la source de vérité."""
     if db.is_enabled():

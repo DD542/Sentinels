@@ -13,6 +13,13 @@ class Settings(BaseSettings):
     # --- Persistance (Neon Postgres) ---
     database_url: str = ""
     vault_ttl_hours: int = 24
+    # Conservation du journal d'audit, en jours. 0 = illimité.
+    # Au-delà, les ENTRÉES SONT CONSERVÉES (la chaîne doit rester
+    # vérifiable) mais leur clé de déchiffrement est détruite : la preuve
+    # demeure, la donnée personnelle devient illisible.
+    audit_retention_days: int = 0
+    # Période entre deux passes de maintenance (purges). 0 = désactivé.
+    purge_interval_minutes: int = 60
     persist_audit: bool = True
     persist_vault: bool = True
     # Clés cryptographiques (32 octets hex chacune ; openssl rand -hex 32)

@@ -22,6 +22,7 @@ from . import db
 from . import auth
 from . import metrics
 from . import logs
+from . import maintenance
 
 settings = get_settings()
 
@@ -55,11 +56,13 @@ async def lifespan(app: FastAPI):
     await chain.load_from_db()
     await events.load_stats_from_db()
     await l3_semantic.load_corpus_from_db()
-    await fpe.purge_expired()
     if settings.strict_mode and not db.is_enabled():
         raise RuntimeError(
             "SENTINEL_STRICT : demarrage refuse — connexion Postgres impossible")
+    await maintenance.run_once()
+    maintenance.start()
     yield
+    await maintenance.stop()
     await db.close_db()
 
 
@@ -191,6 +194,24 @@ async def usage(x_admin_token: str | None = Header(default=None),
     by_client = events.snapshot()["stats"]["by_client"]
     return {"persistent": False, "clients": by_client,
             "total_prompts": sum(c["prompts"] for c in by_client.values())}
+
+
+@app.post("/admin/maintenance/purge")
+async def trigger_purge(x_admin_token: str | None = Header(default=None)) -> dict:
+    """Déclenche une passe de purge à la demande (la même tourne
+    périodiquement) : tokens du vault expirés supprimés, clés d'audit
+    hors rétention détruites. Les entrées d'audit, elles, ne sont jamais
+    supprimées — la chaîne doit rester vérifiable."""
+    if not x_admin_token or not secrets.compare_digest(
+            x_admin_token, settings.effective_admin_token):
+        raise HTTPException(status_code=403, detail="Token admin invalide")
+    result = await maintenance.run_once()
+    return {
+        **result,
+        "audit_retention_days": settings.audit_retention_days or "illimitee",
+        "vault_ttl_hours": settings.vault_ttl_hours,
+        "chain_integrity": await chain.verify_integrity_async(),
+    }
 
 
 @app.post("/corpus/ingest")

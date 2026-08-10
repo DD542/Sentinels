@@ -81,6 +81,8 @@ async def build_report() -> dict:
         "security_posture": {
             "persistence_enabled": db.is_enabled(),
             "rate_limit_per_minute": settings.rate_limit_per_minute,
+            "audit_retention_days": settings.audit_retention_days or None,
+            "vault_ttl_hours": settings.vault_ttl_hours,
             "dashboard_auth_enabled": bool(settings.dashboard_token),
             "dedicated_admin_token": bool(settings.admin_token),
             "strict_mode": settings.strict_mode,
@@ -211,7 +213,16 @@ Périmètre : {html.escape(r["scope"])}</p>
 <td>{_yesno(posture["dedicated_admin_token"])}</td></tr>
 <tr><td>Mode strict (fail-closed)</td>
 <td>{_yesno(posture["strict_mode"])}</td></tr>
+<tr><td>Conservation du journal d'audit</td>
+<td>{(str(posture["audit_retention_days"]) + " jours")
+     if posture["audit_retention_days"] else "illimitée"}</td></tr>
+<tr><td>Durée de vie des jetons du vault</td>
+<td>{posture["vault_ttl_hours"]} h</td></tr>
 </table>
+<p class="muted">Au-delà de la durée de conservation, les entrées du
+journal sont conservées (la chaîne doit rester vérifiable — AI Act
+art. 26(6)) mais leur clé de déchiffrement est détruite : la preuve
+demeure, la donnée personnelle devient illisible.</p>
 
 <h2>6. Signature du rapport</h2>
 <p class="muted">HMAC-SHA256 du JSON canonique (clés triées, champ
