@@ -54,6 +54,7 @@ async def lifespan(app: FastAPI):
     await auth.load_keys_from_db()
     await chain.load_from_db()
     await events.load_stats_from_db()
+    await fpe.purge_expired()
     if settings.strict_mode and not db.is_enabled():
         raise RuntimeError(
             "SENTINEL_STRICT : demarrage refuse — connexion Postgres impossible")

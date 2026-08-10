@@ -155,6 +155,71 @@ async def tokenize_async(value: str, etype: EntityType) -> str:
     return token
 
 
+# Garde-fou mémoire : nombre max de tokens rechargés depuis la base pour
+# une désanonymisation. Le TTL (vault_ttl_hours) borne déjà la table ;
+# cette limite protège d'un pic de trafic exceptionnel.
+_DB_CANDIDATE_LIMIT = 5000
+
+
+async def _db_candidates() -> dict[str, tuple[str, EntityType]]:
+    """Tokens encore valides en base.
+
+    Indispensable : le cache mémoire est LOCAL au process. Sans cette
+    relecture, un redémarrage — ou un simple déploiement multi-workers,
+    où la tokenisation et la réponse ne tombent pas sur le même process —
+    renverrait à l'employé le token factice au lieu de sa vraie valeur."""
+    out: dict[str, tuple[str, EntityType]] = {}
+    if not db.is_enabled():
+        return out
+    try:
+        async with db.pool().acquire() as con:
+            rows = await con.fetch(
+                "SELECT token, cipher, entity_type FROM vault "
+                "WHERE expires_at > now() "
+                "ORDER BY created_at DESC LIMIT $1", _DB_CANDIDATE_LIMIT)
+        for r in rows:
+            real = db.decrypt(r["cipher"])
+            if real is None:
+                continue          # clé maître changée : on ignore la ligne
+            try:
+                out[r["token"]] = (real, EntityType(r["entity_type"]))
+            except ValueError:
+                continue          # type inconnu (schéma plus récent)
+    except Exception as e:
+        from .. import logs
+        logs.get_logger("vault").warning(
+            "relecture vault DB echouee",
+            extra={"event": "db_error", "op": "load_candidates",
+                   "error": f"{type(e).__name__}: {e}"})
+    return out
+
+
+async def purge_expired() -> int:
+    """Applique réellement la durée de conservation : supprime les tokens
+    expirés. Sans ça, `expires_at` ne serait qu'une intention (et la
+    politique de rétention annoncée, inexacte)."""
+    if not db.is_enabled():
+        return 0
+    try:
+        async with db.pool().acquire() as con:
+            result = await con.execute(
+                "DELETE FROM vault WHERE expires_at <= now()")
+        deleted = int(result.split()[-1]) if result else 0
+        if deleted:
+            from .. import logs
+            logs.get_logger("vault").info(
+                "tokens expires purges",
+                extra={"event": "vault_purge", "deleted": deleted})
+        return deleted
+    except Exception as e:
+        from .. import logs
+        logs.get_logger("vault").warning(
+            "purge vault echouee",
+            extra={"event": "db_error", "op": "purge_expired",
+                   "error": f"{type(e).__name__}: {e}"})
+        return 0
+
+
 def _fuzzy_restore(text: str, candidates: dict[str, tuple[str, EntityType]]) -> str:
     """Récupération floue : restaure les tokens corrompus par le LLM.
     Même logique que detokenize_async, factorisée pour être réutilisée
@@ -217,8 +282,12 @@ def detokenize(text: str) -> str:
 
 
 async def detokenize_async(text: str) -> str:
-    """Désanonymise en interrogeant cache + base."""
-    candidates: dict[str, tuple[str, EntityType]] = dict(_REVERSE_MAP)
+    """Désanonymise en interrogeant cache mémoire ET base.
+
+    Le cache local prime (il est toujours à jour) ; la base couvre les
+    tokens créés par un autre process ou avant un redémarrage."""
+    candidates: dict[str, tuple[str, EntityType]] = await _db_candidates()
+    candidates.update(_REVERSE_MAP)
 
     unmatched_structured: list[tuple[str, str]] = []
 

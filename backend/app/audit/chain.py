@@ -47,11 +47,17 @@ _SHREDDED: set[str] = set()
 
 async def _get_or_create_key_db(entity_id: str) -> bytes | None:
     """Version persistée : la DEK enveloppée vit dans `audit_keys`.
-    Si la ligne a été supprimée (oubli), renvoie None."""
+    Si la ligne a été supprimée (oubli), renvoie None.
+
+    La DEK enveloppée est aussi mise en cache dans le keyring mémoire :
+    sans ça, une entrée écrite ne serait relisible qu'après redémarrage,
+    et une donnée simplement non chargée serait indiscernable d'une
+    donnée effacée."""
     async with db.pool().acquire() as con:
         row = await con.fetchrow(
             "SELECT wrapped FROM audit_keys WHERE entity_id = $1", entity_id)
         if row is not None:
+            crypto._KEYRING[entity_id] = row["wrapped"]
             return crypto.unwrap_key(row["wrapped"])
         # Jamais vue : on crée. INSERT ... ON CONFLICT DO NOTHING gère la
         # course entre deux requêtes concurrentes sur la même entité.
@@ -64,7 +70,11 @@ async def _get_or_create_key_db(entity_id: str) -> bytes | None:
             # Une autre requête a inséré entre-temps : on relit sa clé.
             row = await con.fetchrow(
                 "SELECT wrapped FROM audit_keys WHERE entity_id = $1", entity_id)
-            return crypto.unwrap_key(row["wrapped"]) if row else None
+            if row is None:
+                return None
+            crypto._KEYRING[entity_id] = row["wrapped"]
+            return crypto.unwrap_key(row["wrapped"])
+        crypto._KEYRING[entity_id] = wrapped
         return dek
 
 

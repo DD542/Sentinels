@@ -33,7 +33,7 @@ obligations du déployeur.
 |:---|:---|:---|
 | **Art. 4(5) & 32 — Pseudonymisation.** | **Tokenisation à format préservé (FPE)** : le fournisseur d'IA ne reçoit que des substituts factices ; la table de correspondance reste chez vous, chiffrée. C'est la définition exacte de la pseudonymisation de l'art. 4(5). | Une donnée non détectée part en clair — voir [Limites connues](../README.md#limites-connues). |
 | **Art. 5(1)(c) — Minimisation.** | Seul le texte utile, débarrassé des données identifiantes, quitte l'entreprise. | — |
-| **Art. 17 — Droit à l'effacement.** | **Crypto-shredding** : les données d'audit sont chiffrées par clé dérivée par entité ; détruire la clé d'une entité rend ses données définitivement illisibles, sans réécrire le journal. | L'effacement chez le fournisseur d'IA tiers relève de votre contrat avec lui. |
+| **Art. 17 — Droit à l'effacement.** | **Crypto-shredding** (`POST /compliance/forget`) : chaque entité possède une clé de chiffrement **aléatoire** (Fernet), stockée enveloppée par une clé maître. Détruire cette clé rend ses données définitivement illisibles — y compris pour l'exploitant — sans réécrire le journal ni casser la chaîne de hachage. Voir [politique-retention.md](politique-retention.md). | L'effacement chez le fournisseur d'IA tiers relève de votre contrat avec lui. |
 | **Art. 25 — Protection dès la conception.** | L'architecture même (passerelle interposée, détection par défaut, fail-safe) matérialise le *privacy by design* pour les flux IA. | — |
 | **Art. 30 — Registre des traitements.** | Modèle de registre **pré-rempli** pour le traitement « passerelle IA » : [registre-rgpd.md](registre-rgpd.md). | À compléter avec vos informations (responsable, DPO, durées). |
 | **Art. 32 — Sécurité du traitement.** | Chiffrement au repos (Fernet), clés API stockées hachées, journal inviolable, authentification multi-clients, rate-limiting, comparaisons en temps constant. | La sécurité de l'infrastructure d'hébergement vous incombe. |
@@ -46,6 +46,9 @@ obligations du déployeur.
   en PDF) et `GET /compliance/report.json` (canonique, signé HMAC-SHA256 —
   re-vérifiable par l'exploitant, seul détenteur de la clé d'audit).
 - **Registre RGPD pré-rempli** : [registre-rgpd.md](registre-rgpd.md).
+- **Politique de conservation** : [politique-retention.md](politique-retention.md)
+  — ce qui est stocké, sous quelle forme, combien de temps, et comment
+  l'effacer (crypto-shredding).
 - **Benchmark public** de détection : voir README, section
   « Benchmark externe ».
 
