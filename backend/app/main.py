@@ -54,6 +54,7 @@ async def lifespan(app: FastAPI):
     await auth.load_keys_from_db()
     await chain.load_from_db()
     await events.load_stats_from_db()
+    await l3_semantic.load_corpus_from_db()
     await fpe.purge_expired()
     if settings.strict_mode and not db.is_enabled():
         raise RuntimeError(
@@ -199,10 +200,29 @@ async def ingest(req: IngestRequest,
     (isolation multi-tenant)."""
     result = await asyncio.to_thread(l3_semantic.ingest_document,
                                      req.doc_id, req.text, client_id)
+    # Persisté : sinon la protection disparaîtrait au redémarrage.
+    result["persisted"] = await l3_semantic.persist_document(
+        req.doc_id, client_id) > 0
     await chain.append_async("CORPUS_INGEST", "DOCUMENT", req.doc_id,
                              {"shingles": result["shingles"], "chunks": result["chunks"],
                               "client": client_id})
     return result
+
+
+@app.delete("/corpus/{doc_id}")
+async def remove_document(doc_id: str,
+                          client_id: str = Depends(auth.verify_key)) -> dict:
+    """Retire un document du corpus du client (mémoire et base) : son
+    contenu n'est plus protégé contre la fuite. Scellé dans l'audit."""
+    removed = await l3_semantic.forget_document(doc_id, client_id)
+    if removed == 0:
+        raise HTTPException(status_code=404,
+                            detail="Document inconnu dans votre corpus")
+    entry = await chain.append_async("CORPUS_REMOVE", "DOCUMENT", doc_id,
+                                     {"shingles_removed": removed,
+                                      "client": client_id})
+    return {"doc_id": doc_id, "shingles_removed": removed,
+            "audit_hash": entry["hash"][:12]}
 
 
 @app.get("/corpus/stats")

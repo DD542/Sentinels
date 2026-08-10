@@ -91,6 +91,25 @@ async def init_db() -> None:
                     provider TEXT PRIMARY KEY,
                     requests BIGINT NOT NULL DEFAULT 0
                 );
+
+                -- Corpus confidentiel (L3), cloisonné par client.
+                -- On ne stocke QUE des empreintes non réversibles :
+                -- jamais le texte des documents.
+                CREATE TABLE IF NOT EXISTS corpus_shingles (
+                    client_id TEXT   NOT NULL,
+                    shingle   BIGINT NOT NULL,
+                    doc_id    TEXT   NOT NULL,
+                    PRIMARY KEY (client_id, shingle)
+                );
+
+                CREATE TABLE IF NOT EXISTS corpus_chunks (
+                    id        BIGSERIAL PRIMARY KEY,
+                    client_id TEXT  NOT NULL,
+                    doc_id    TEXT  NOT NULL,
+                    vec       BYTEA NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_corpus_chunks_client
+                    ON corpus_chunks (client_id);
             """)
     except Exception as e:
         # Connexion impossible : on reste en repli mémoire plutôt que crasher.

@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/DD542/sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/DD542/sentinel/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-177%20passed-brightgreen)](https://github.com/DD542/sentinel)
+[![Tests](https://img.shields.io/badge/tests-185%20passed-brightgreen)](https://github.com/DD542/sentinel)
 [![Benchmark](https://img.shields.io/badge/detection%20F1-100%25-brightgreen)](https://github.com/DD542/sentinel)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -70,7 +70,7 @@ Benchmark sur **89 prompts étiquetés** (`backend/tests/benchmark.py`) :
 | **Global** | **100 %** | **100 %** | **100 %** |
 
 **42 prompts innocents traités sans aucun faux positif.** Latence moyenne : ~100 ms/prompt.
-Suite de tests : **177 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
+Suite de tests : **185 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
 
 > Ces chiffres portent sur le jeu de test fourni, qui couvre les formats structurés, l'obfuscation (base64, hexadécimal, espacement) et les tentatives d'évasion. Ils ne constituent pas une garantie de détection exhaustive — voir [Limites connues](#limites-connues).
 
@@ -252,6 +252,7 @@ Le fournisseur reçoit `Hugo Blanc` et un IBAN factice valide. L'employé reçoi
 | `/admin/usage` | GET | token admin | Consommation par client, persistée, ventilation journalière |
 | `/corpus/ingest` | POST | clé SENTINEL | Indexer un document confidentiel |
 | `/corpus/stats` | GET | clé SENTINEL | Statistiques du corpus du client |
+| `/corpus/{doc_id}` | DELETE | clé SENTINEL | Retirer un document du corpus |
 | `/gateway/scan` | POST | clé SENTINEL | Analyser un texte sans le transmettre |
 | `/gateway/chat` | POST | clé SENTINEL | Pipeline complet vers un fournisseur IA |
 | `/compliance/report` | GET | token dashboard¹ | Rapport de conformité signé (HTML, imprimable PDF) |
@@ -323,6 +324,7 @@ Ces limites sont documentées **parce qu'elles existent dans toutes les solution
 - [x] Chiffrement fort du journal (Fernet AES-128 + HMAC) et effacement RGPD par crypto-shredding (`/compliance/forget`)
 - [x] [Politique de conservation documentée](docs/politique-retention.md) : ce qui est stocké, chiffré comment, purgé quand
 - [x] Vault relu depuis la base : la restauration des vraies valeurs survit à un redémarrage et fonctionne en multi-workers ; TTL réellement purgé
+- [x] Corpus L3 persisté (empreintes seules, jamais le texte) : la protection anti-fuite survit aux redémarrages ; retrait d'un document via `DELETE /corpus/{doc_id}`
 
 ** À venir**
 
@@ -364,7 +366,7 @@ Benchmark over **89 labelled prompts** (`backend/tests/benchmark.py`):
 | **Overall** | **100%** | **100%** | **100%** |
 
 **42 innocent prompts processed with zero false positives.** Average latency: ~100 ms/prompt.
-Test suite: **177 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
+Test suite: **185 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
 
 > These figures cover the provided test set (structured formats, base64/hex/spacing obfuscation, evasion attempts). They are not a guarantee of exhaustive detection — see [Known limitations](#known-limitations).
 
@@ -472,6 +474,7 @@ cd ../frontend && npm install && npm run dev    # dashboard
 | `/admin/usage` | GET | admin token | Per-client consumption, persisted, daily breakdown |
 | `/corpus/ingest` | POST | SENTINEL key | Index a confidential document |
 | `/corpus/stats` | GET | SENTINEL key | Client's corpus statistics |
+| `/corpus/{doc_id}` | DELETE | SENTINEL key | Remove a document from the corpus |
 | `/gateway/scan` | POST | SENTINEL key | Analyse text without forwarding |
 | `/gateway/chat` | POST | SENTINEL key | Full pipeline to an AI provider |
 | `/compliance/report` | GET | dashboard token¹ | Signed compliance report (HTML, print-to-PDF) |
@@ -536,6 +539,7 @@ These limitations are documented **because they exist in every solution on the m
 - [x] Strong audit-log encryption (Fernet AES-128 + HMAC) and GDPR erasure via crypto-shredding (`/compliance/forget`)
 - [x] [Documented retention policy](docs/politique-retention.md): what is stored, how it is encrypted, when it is purged
 - [x] Vault re-read from the database: real-value restoration survives restarts and works across workers; TTL actually purged
+- [x] Persisted L3 corpus (fingerprints only, never the text): IP-leak protection survives restarts; remove a document via `DELETE /corpus/{doc_id}`
 
 ** Next**
 

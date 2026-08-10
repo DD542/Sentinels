@@ -34,11 +34,11 @@ explicite et non négociable :
 | `api_keys` | Empreinte HMAC de chaque clé client, statut actif/révoqué | Non réversible par construction | Permanente (révocation = passage à inactif) |
 | `usage_counters` | Agrégats par client et par jour : nombre de prompts, tokenisations, blocages | Aucun (ce sont des compteurs, pas des données personnelles) | Permanente (facturation) |
 | `provider_counters` | Nombre d'appels par fournisseur | Aucun | Permanente |
+| `corpus_shingles` | Empreintes **non réversibles** (blake2b, 64 bits) des documents confidentiels, par client | Non réversible par construction — le texte n'est jamais stocké | Jusqu'à suppression du document (`DELETE /corpus/{doc_id}`) |
+| `corpus_chunks` | Vecteurs sémantiques des documents (si embeddings activés) | Non réversible en pratique — le texte n'est jamais stocké | Idem |
 
 **En mémoire uniquement** (perdu au redémarrage, par conception) : le flux
-temps réel du dashboard (200 derniers événements) et **le corpus de
-documents confidentiels (L3)**, qui doit être ré-ingéré après un
-redémarrage — voir *Limites* ci-dessous.
+temps réel du dashboard (200 derniers événements).
 
 ## Les journaux applicatifs
 
@@ -78,13 +78,10 @@ distincte, avec son horodatage et son hash.
 | La donnée effacée l'est vraiment | Après `/compliance/forget`, le détail est illisible et l'intégrité reste vraie (`backend/tests/test_audit_crypto.py`) |
 | Rien de sensible dans les logs | `backend/tests/test_logs.py` |
 | La rétention du vault est appliquée | `backend/tests/test_vault_persistence.py` |
+| Le corpus ne contient aucun texte | `backend/tests/test_corpus_persistence.py` |
 
 ## Limites, en toute transparence
 
-- **Le corpus L3 n'est pas persisté.** Les documents confidentiels
-  indexés vivent en mémoire : après un redémarrage, il faut les
-  ré-ingérer, sinon la protection contre la fuite de propriété
-  intellectuelle est inactive. Persistance prévue.
 - **La rétention de l'audit est illimitée par défaut.** Aucune purge
   automatique du journal : à définir selon votre politique (une purge
   périodique est à mettre en place côté exploitation).

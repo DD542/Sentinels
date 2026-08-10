@@ -3,13 +3,21 @@ import hashlib
 import re
 import threading
 from ..config import get_settings
+from .. import db
 from .types import Finding, EntityType
 
 settings = get_settings()
 
 # ============================================================
-# Index du corpus confidentiel (mémoire pour la démo ;
-# production : table Postgres + pgvector)
+# Index du corpus confidentiel.
+#
+# L'index vit en mémoire (le scan est synchrone et doit rester
+# rapide) mais il est PERSISTÉ : sans ça, un redémarrage
+# désactiverait silencieusement la protection contre la fuite
+# de propriété intellectuelle.
+#
+# On ne persiste QUE des empreintes non réversibles (shingles
+# blake2b, vecteurs) — jamais le texte des documents.
 #
 # Cloisonné par client : le corpus du client A ne doit jamais
 # influencer les scans du client B (ni bloquer ses requêtes, ni
@@ -91,11 +99,145 @@ def ingest_document(doc_id: str, text: str,
         vectors = embedder.encode([f"passage: {c}" for c in chunks])
         with _lock:
             doc_chunks = _DOC_CHUNKS.setdefault(client_id, [])
-            for chunk, vec in zip(chunks, vectors):
-                doc_chunks.append({"doc_id": doc_id, "text": chunk, "vec": vec})
+            for vec in vectors:
+                # Le texte du chunk n'est jamais conservé : seul le
+                # vecteur sert à la détection.
+                doc_chunks.append({"doc_id": doc_id, "vec": vec})
         chunk_count = len(chunks)
 
     return {"doc_id": doc_id, "shingles": len(shingles), "chunks": chunk_count}
+
+
+# ============================================================
+# Persistance du corpus
+# ============================================================
+
+def _to_db(h: int) -> int:
+    """uint64 (blake2b) -> int64 signé, domaine d'un BIGINT Postgres."""
+    return h - (1 << 64) if h >= (1 << 63) else h
+
+
+def _from_db(v: int) -> int:
+    return v + (1 << 64) if v < 0 else v
+
+
+def _vec_to_bytes(vec) -> bytes:
+    import numpy as np
+    return np.asarray(vec, dtype="float32").tobytes()
+
+
+def _vec_from_bytes(blob: bytes):
+    import numpy as np
+    return np.frombuffer(blob, dtype="float32")
+
+
+async def persist_document(doc_id: str,
+                           client_id: str = DEFAULT_CLIENT) -> int:
+    """Écrit en base les empreintes d'un document déjà ingéré en mémoire.
+    Best-effort : une panne de base ne doit pas faire échouer l'ingestion
+    (le document reste protégé pour la durée de vie du process)."""
+    if not db.is_enabled():
+        return 0
+    with _lock:
+        shingles = [(client_id, _to_db(h), doc_id)
+                    for h, d in _SHINGLE_INDEX.get(client_id, {}).items()
+                    if d == doc_id]
+        chunks = [(client_id, doc_id, _vec_to_bytes(c["vec"]))
+                  for c in _DOC_CHUNKS.get(client_id, [])
+                  if c["doc_id"] == doc_id]
+    try:
+        async with db.pool().acquire() as con:
+            await con.executemany(
+                "INSERT INTO corpus_shingles (client_id, shingle, doc_id) "
+                "VALUES ($1, $2, $3) ON CONFLICT (client_id, shingle) "
+                "DO UPDATE SET doc_id = EXCLUDED.doc_id", shingles)
+            # Ré-ingestion du même document : on remplace ses vecteurs.
+            await con.execute(
+                "DELETE FROM corpus_chunks WHERE client_id = $1 AND doc_id = $2",
+                client_id, doc_id)
+            if chunks:
+                await con.executemany(
+                    "INSERT INTO corpus_chunks (client_id, doc_id, vec) "
+                    "VALUES ($1, $2, $3)", chunks)
+        return len(shingles)
+    except Exception as e:
+        from .. import logs
+        logs.get_logger("corpus").warning(
+            "persistance corpus echouee",
+            extra={"event": "db_error", "op": "persist_document",
+                   "doc_id": doc_id, "error": f"{type(e).__name__}: {e}"})
+        return 0
+
+
+async def load_corpus_from_db() -> int:
+    """Recharge le corpus au démarrage. Sans ça, la protection contre la
+    fuite de propriété intellectuelle serait inactive après un
+    redémarrage, silencieusement."""
+    if not db.is_enabled():
+        return 0
+    try:
+        async with db.pool().acquire() as con:
+            shingles = await con.fetch(
+                "SELECT client_id, shingle, doc_id FROM corpus_shingles")
+            chunks = await con.fetch(
+                "SELECT client_id, doc_id, vec FROM corpus_chunks")
+    except Exception as e:
+        from .. import logs
+        logs.get_logger("corpus").warning(
+            "rechargement corpus impossible",
+            extra={"event": "db_error", "op": "load_corpus",
+                   "error": f"{type(e).__name__}: {e}"})
+        return 0
+
+    with _lock:
+        _SHINGLE_INDEX.clear()
+        _DOC_CHUNKS.clear()
+        for r in shingles:
+            _SHINGLE_INDEX.setdefault(r["client_id"], {})[
+                _from_db(r["shingle"])] = r["doc_id"]
+        for r in chunks:
+            _DOC_CHUNKS.setdefault(r["client_id"], []).append(
+                {"doc_id": r["doc_id"], "vec": _vec_from_bytes(r["vec"])})
+
+    from .. import logs
+    logs.get_logger("corpus").info(
+        "corpus recharge", extra={
+            "event": "corpus_loaded", "clients": len(_SHINGLE_INDEX),
+            "shingles": len(shingles), "chunks": len(chunks)})
+    return len(shingles)
+
+
+async def forget_document(doc_id: str,
+                          client_id: str = DEFAULT_CLIENT) -> int:
+    """Retire un document du corpus (mémoire + base). Son contenu n'est
+    plus protégé : à utiliser quand un document devient public ou a été
+    indexé par erreur. Renvoie le nombre d'empreintes supprimées."""
+    with _lock:
+        index = _SHINGLE_INDEX.get(client_id, {})
+        removed = [h for h, d in index.items() if d == doc_id]
+        for h in removed:
+            del index[h]
+        chunks = _DOC_CHUNKS.get(client_id)
+        if chunks:
+            _DOC_CHUNKS[client_id] = [c for c in chunks
+                                      if c["doc_id"] != doc_id]
+
+    if db.is_enabled():
+        try:
+            async with db.pool().acquire() as con:
+                await con.execute(
+                    "DELETE FROM corpus_shingles "
+                    "WHERE client_id = $1 AND doc_id = $2", client_id, doc_id)
+                await con.execute(
+                    "DELETE FROM corpus_chunks "
+                    "WHERE client_id = $1 AND doc_id = $2", client_id, doc_id)
+        except Exception as e:
+            from .. import logs
+            logs.get_logger("corpus").warning(
+                "suppression corpus echouee",
+                extra={"event": "db_error", "op": "forget_document",
+                       "doc_id": doc_id, "error": f"{type(e).__name__}: {e}"})
+    return len(removed)
 
 
 def corpus_stats(client_id: str = DEFAULT_CLIENT) -> dict:
