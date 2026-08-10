@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .config import get_settings
-from .detection.engine import DetectionEngine
+from .detection.engine import DetectionEngine, IDENTIFYING_TYPES
 from .detection.types import Action, EntityType
 from .detection import l3_semantic
 from .detection import l2_ner
@@ -313,7 +313,11 @@ async def scan(req: ScanRequest,
         entry = await chain.append_async(
             action.value, f.entity_type.value,
             f"{f.entity_type.value}:{f.start}",
-            {"value": f.value, "confidence": f.confidence, "layer": f.layer})
+            {"value": f.value, "confidence": f.confidence, "layer": f.layer},
+            # Indexe la personne concernée (index aveugle) pour les
+            # seules données identifiantes : un secret technique ou une
+            # fuite documentaire ne concerne aucun individu.
+            subject=f.value if f.entity_type in IDENTIFYING_TYPES else None)
         await events.publish({
             "kind": "decision", "client": client_id, "action": action.value,
             "entity_type": f.entity_type.value, "layer": f.layer,

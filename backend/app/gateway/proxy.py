@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from ..config import get_settings
-from ..detection.engine import DetectionEngine
+from ..detection.engine import DetectionEngine, IDENTIFYING_TYPES
 from ..detection.types import Action, EntityType
 from ..vault import fpe
 from ..audit import chain
@@ -70,7 +70,8 @@ async def _sanitize(text: str, client_id: str) -> tuple[str, list[dict], bool]:
         entry = await chain.append_async(
             action.value, f.entity_type.value,
             f"{f.entity_type.value}:{f.start}",
-            {"confidence": f.confidence, "layer": f.layer})
+            {"confidence": f.confidence, "layer": f.layer},
+            subject=f.value if f.entity_type in IDENTIFYING_TYPES else None)
         decisions.append({"type": f.entity_type.value, "action": action.value,
                           "layer": f.layer, "audit_hash": entry["hash"][:12]})
         await events.publish({

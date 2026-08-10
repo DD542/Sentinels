@@ -8,6 +8,7 @@ from ..config import get_settings
 from .. import db
 from .. import logs
 from . import crypto
+from . import subjects
 
 settings = get_settings()
 _log = logs.get_logger("audit")
@@ -78,7 +79,8 @@ async def _get_or_create_key_db(entity_id: str) -> bytes | None:
         return dek
 
 
-def _build_entry(action, entity_type, entity_id, cipher, prev_hash) -> dict:
+def _build_entry(action, entity_type, entity_id, cipher, prev_hash,
+                 subject_ref: str | None = None) -> dict:
     entry = {
         "ts": time.time(),
         "action": action,
@@ -87,20 +89,44 @@ def _build_entry(action, entity_type, entity_id, cipher, prev_hash) -> dict:
         "cipher": cipher,
         "prev_hash": prev_hash,
     }
+    # Champ ajouté seulement s'il existe : les entrées antérieures à
+    # l'index aveugle ont été scellées sans lui, leur hash doit rester
+    # vérifiable à l'identique.
+    if subject_ref:
+        entry["subject_ref"] = subject_ref
     entry["hash"] = _seal(entry, prev_hash)
     return entry
+
+
+def _row_to_entry(row) -> dict:
+    """Ligne SQL -> entrée. `subject_ref` NULL est retiré : la colonne
+    existe pour toutes les lignes, mais les anciennes ont été scellées
+    sans ce champ."""
+    entry = dict(row)
+    if entry.get("subject_ref") is None:
+        entry.pop("subject_ref", None)
+    return entry
+
+
+def _key_id(entry: dict) -> str:
+    """Identifiant de la clé de chiffrement d'une entrée : la personne
+    concernée quand elle est connue (l'oubli est alors chirurgical),
+    sinon l'entité technique."""
+    return entry.get("subject_ref") or entry["entity_id"]
 
 
 # ============================================================
 # API synchrone (repli mémoire, conservée pour compat)
 # ============================================================
 
-def append(action: str, entity_type: str, entity_id: str, detail: dict) -> dict:
+def append(action: str, entity_type: str, entity_id: str, detail: dict,
+           subject: str | None = None) -> dict:
     prev_hash = _CHAIN[-1]["hash"] if _CHAIN else _GENESIS
-    dek = _get_or_create_key_mem(entity_id)
+    ref = subjects.subject_ref(subject)
+    dek = _get_or_create_key_mem(ref or entity_id)
     # dek None (entité oubliée) : on scelle un marqueur non déchiffrable.
     cipher = crypto.encrypt_detail(detail, dek) if dek else "SHREDDED"
-    entry = _build_entry(action, entity_type, entity_id, cipher, prev_hash)
+    entry = _build_entry(action, entity_type, entity_id, cipher, prev_hash, ref)
     _CHAIN.append(entry)
     return entry
 
@@ -117,8 +143,8 @@ def verify_integrity() -> bool:
 
 def read_detail(entry: dict) -> dict | None:
     """Déchiffre le détail d'une entrée si sa clé existe encore.
-    None = entité oubliée (crypto-shreddée) ou clé indisponible."""
-    dek = _get_or_create_key_mem_readonly(entry["entity_id"])
+    None = personne oubliée (crypto-shreddée) ou clé indisponible."""
+    dek = _get_or_create_key_mem_readonly(_key_id(entry))
     if dek is None:
         return None
     return crypto.decrypt_detail(entry["cipher"], dek)
@@ -135,7 +161,7 @@ def forget(entity_id: str) -> int:
     Renvoie le nombre d'entrées désormais illisibles."""
     _SHREDDED.add(entity_id)
     crypto._KEYRING.pop(entity_id, None)
-    return sum(1 for e in _CHAIN if e["entity_id"] == entity_id)
+    return sum(1 for e in _CHAIN if _key_id(e) == entity_id)
 
 
 # ============================================================
@@ -149,13 +175,13 @@ async def load_from_db() -> None:
     try:
         async with db.pool().acquire() as con:
             rows = await con.fetch(
-                "SELECT ts, action, entity_type, entity_id, cipher, prev_hash, hash "
-                "FROM audit_chain ORDER BY seq ASC"
+                "SELECT ts, action, entity_type, entity_id, cipher, prev_hash, "
+                "hash, subject_ref FROM audit_chain ORDER BY seq ASC"
             )
             keys = await con.fetch("SELECT entity_id, wrapped FROM audit_keys")
         _CHAIN.clear()
         for r in rows:
-            _CHAIN.append(dict(r))
+            _CHAIN.append(_row_to_entry(r))
         crypto._KEYRING.clear()
         for k in keys:
             crypto._KEYRING[k["entity_id"]] = k["wrapped"]
@@ -166,22 +192,28 @@ async def load_from_db() -> None:
 
 
 async def append_async(action: str, entity_type: str, entity_id: str,
-                       detail: dict) -> dict:
+                       detail: dict, subject: str | None = None) -> dict:
+    """`subject` : la valeur identifiant la personne concernée (nom, IBAN…).
+    Elle n'est jamais stockée : seule sa référence aveugle l'est, et elle
+    sert de clé de chiffrement — l'oubli d'une personne ne touche donc
+    qu'elle."""
     prev_hash = _CHAIN[-1]["hash"] if _CHAIN else _GENESIS
+    ref = subjects.subject_ref(subject)
+    key_id = ref or entity_id
 
     if db.is_enabled():
         try:
-            dek = await _get_or_create_key_db(entity_id)
+            dek = await _get_or_create_key_db(key_id)
         except Exception as e:
             _log.warning("keyring DB indisponible, repli memoire", extra={
                 "event": "db_error", "op": "audit_key",
                 "error": f"{type(e).__name__}: {e}"})
-            dek = _get_or_create_key_mem(entity_id)
+            dek = _get_or_create_key_mem(key_id)
     else:
-        dek = _get_or_create_key_mem(entity_id)
+        dek = _get_or_create_key_mem(key_id)
 
     cipher = crypto.encrypt_detail(detail, dek) if dek else "SHREDDED"
-    entry = _build_entry(action, entity_type, entity_id, cipher, prev_hash)
+    entry = _build_entry(action, entity_type, entity_id, cipher, prev_hash, ref)
     _CHAIN.append(entry)
 
     if db.is_enabled():
@@ -189,11 +221,12 @@ async def append_async(action: str, entity_type: str, entity_id: str,
             async with db.pool().acquire() as con:
                 await con.execute(
                     "INSERT INTO audit_chain "
-                    "(ts, action, entity_type, entity_id, cipher, prev_hash, hash) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                    "(ts, action, entity_type, entity_id, cipher, prev_hash, "
+                    "hash, subject_ref) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
                     entry["ts"], entry["action"], entry["entity_type"],
                     entry["entity_id"], entry["cipher"], entry["prev_hash"],
-                    entry["hash"],
+                    entry["hash"], ref,
                 )
         except Exception as e:
             _log.warning("ecriture audit DB echouee", extra={
@@ -223,6 +256,83 @@ async def forget_async(entity_id: str) -> int:
                 "event": "db_error", "op": "forget",
                 "error": f"{type(e).__name__}: {e}"})
     return sum(1 for e in _CHAIN if e["entity_id"] == entity_id)
+
+
+async def subject_summary(value: str) -> dict:
+    """Droit d'accès (RGPD art. 15) : ce que le journal contient sur une
+    personne. On renvoie des **métadonnées** (nombre d'entrées, types de
+    données, période, actions) — jamais les valeurs, qui restent
+    chiffrées. La valeur fournie n'est ni stockée ni journalisée."""
+    ref = subjects.subject_ref(value)
+    if ref is None:
+        return {"found": False, "entries": 0}
+
+    if db.is_enabled():
+        try:
+            async with db.pool().acquire() as con:
+                rows = await con.fetch(
+                    "SELECT action, entity_type, MIN(ts) AS first_ts, "
+                    "MAX(ts) AS last_ts, COUNT(*) AS n FROM audit_chain "
+                    "WHERE subject_ref = $1 GROUP BY action, entity_type", ref)
+                key = await con.fetchrow(
+                    "SELECT 1 FROM audit_keys WHERE entity_id = $1", ref)
+            total = sum(int(r["n"]) for r in rows)
+            return {
+                "found": total > 0,
+                "entries": total,
+                "erased": total > 0 and key is None,
+                "breakdown": [{"action": r["action"],
+                               "entity_type": r["entity_type"],
+                               "count": int(r["n"])} for r in rows],
+                "first_seen": min((r["first_ts"] for r in rows), default=None),
+                "last_seen": max((r["last_ts"] for r in rows), default=None),
+            }
+        except Exception as e:
+            _log.warning("resume par personne echoue", extra={
+                "event": "db_error", "op": "subject_summary",
+                "error": f"{type(e).__name__}: {e}"})
+
+    matching = [e for e in _CHAIN if e.get("subject_ref") == ref]
+    return {
+        "found": bool(matching),
+        "entries": len(matching),
+        "erased": bool(matching) and ref not in crypto._KEYRING,
+        "breakdown": [{"action": e["action"],
+                       "entity_type": e["entity_type"], "count": 1}
+                      for e in matching],
+        "first_seen": min((e["ts"] for e in matching), default=None),
+        "last_seen": max((e["ts"] for e in matching), default=None),
+    }
+
+
+async def forget_subject(value: str) -> int:
+    """Droit à l'effacement (RGPD art. 17) visant **une personne**.
+
+    Détruit la clé de la personne : toutes ses entrées deviennent
+    illisibles, et **uniquement les siennes** — c'est tout l'intérêt
+    d'avoir indexé par personne plutôt que par entité technique.
+    Renvoie le nombre d'entrées concernées."""
+    ref = subjects.subject_ref(value)
+    if ref is None:
+        return 0
+
+    crypto._KEYRING.pop(ref, None)
+    _SHREDDED.add(ref)
+
+    if db.is_enabled():
+        try:
+            async with db.pool().acquire() as con:
+                await con.execute(
+                    "DELETE FROM audit_keys WHERE entity_id = $1", ref)
+                row = await con.fetchrow(
+                    "SELECT COUNT(*) AS n FROM audit_chain "
+                    "WHERE subject_ref = $1", ref)
+            return int(row["n"]) if row else 0
+        except Exception as e:
+            _log.warning("effacement par personne echoue", extra={
+                "event": "db_error", "op": "forget_subject",
+                "error": f"{type(e).__name__}: {e}"})
+    return sum(1 for e in _CHAIN if e.get("subject_ref") == ref)
 
 
 async def purge_expired_keys(retention_days: int) -> int:
@@ -272,12 +382,12 @@ async def verify_integrity_async() -> bool:
         try:
             async with db.pool().acquire() as con:
                 rows = await con.fetch(
-                    "SELECT ts, action, entity_type, entity_id, cipher, prev_hash, hash "
-                    "FROM audit_chain ORDER BY seq ASC"
+                    "SELECT ts, action, entity_type, entity_id, cipher, prev_hash, "
+                    "hash, subject_ref FROM audit_chain ORDER BY seq ASC"
                 )
             prev = _GENESIS
             for r in rows:
-                e = dict(r)
+                e = _row_to_entry(r)
                 expected = _seal({k: v for k, v in e.items() if k != "hash"}, prev)
                 if e["hash"] != expected or e["prev_hash"] != prev:
                     return False

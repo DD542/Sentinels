@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from .config import get_settings
 from .dashboard import require_dashboard_token
 from .audit import chain
+from .audit import subjects as audit_subjects
 from . import events
 from . import db
 
@@ -124,6 +125,55 @@ async def forget_entity(req: ForgetRequest) -> dict:
         "entity_id": req.entity_id,
         "entries_shredded": affected,
         "method": "crypto-shredding (Fernet DEK détruite)",
+        "audit_hash": entry["hash"][:12],
+        "chain_integrity": await chain.verify_integrity_async(),
+    }
+
+
+class SubjectRequest(BaseModel):
+    value: str          # nom, IBAN, email… de la personne concernée
+    admin_token: str
+
+
+@router.post("/compliance/subject")
+async def subject_access(req: SubjectRequest) -> dict:
+    """Droit d'accès (RGPD art. 15) : ce que le journal contient sur une
+    personne, en **métadonnées** (nombre d'entrées, types, période).
+
+    La valeur transmise sert uniquement à recalculer la référence
+    aveugle : elle n'est ni stockée, ni journalisée, et la réponse ne
+    renvoie aucune donnée déchiffrée."""
+    if not secrets.compare_digest(req.admin_token,
+                                  settings.effective_admin_token):
+        raise HTTPException(status_code=403, detail="Token admin invalide")
+    return await chain.subject_summary(req.value)
+
+
+@router.post("/compliance/forget-subject")
+async def forget_subject(req: SubjectRequest) -> dict:
+    """Droit à l'effacement (RGPD art. 17) visant **une personne**.
+
+    Détruit sa clé de chiffrement : toutes ses entrées deviennent
+    illisibles, et uniquement les siennes. La chaîne de hachage reste
+    intacte — la preuve qu'un traitement a eu lieu demeure. L'acte
+    d'effacement est scellé dans le journal avec la référence aveugle,
+    jamais l'identité en clair."""
+    if not secrets.compare_digest(req.admin_token,
+                                  settings.effective_admin_token):
+        raise HTTPException(status_code=403, detail="Token admin invalide")
+
+    ref = audit_subjects.subject_ref(req.value)
+    if ref is None:
+        raise HTTPException(status_code=400,
+                            detail="Valeur vide ou sans contenu exploitable")
+    affected = await chain.forget_subject(req.value)
+    entry = await chain.append_async(
+        "ERASURE_SUBJECT", "GDPR", f"erasure:{ref}",
+        {"subject_ref": ref, "entries_shredded": affected})
+    return {
+        "subject_ref": ref,
+        "entries_shredded": affected,
+        "method": "crypto-shredding (cle de la personne detruite)",
         "audit_hash": entry["hash"][:12],
         "chain_integrity": await chain.verify_integrity_async(),
     }

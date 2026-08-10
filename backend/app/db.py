@@ -110,6 +110,14 @@ async def init_db() -> None:
                 );
                 CREATE INDEX IF NOT EXISTS idx_corpus_chunks_client
                     ON corpus_chunks (client_id);
+
+                -- Index aveugle des personnes concernées : permet de
+                -- retrouver les entrées d'un individu (RGPD art. 15/17)
+                -- sans jamais stocker son identité en clair.
+                ALTER TABLE audit_chain
+                    ADD COLUMN IF NOT EXISTS subject_ref TEXT;
+                CREATE INDEX IF NOT EXISTS idx_audit_subject
+                    ON audit_chain (subject_ref);
             """)
     except Exception as e:
         # Connexion impossible : on reste en repli mémoire plutôt que crasher.
