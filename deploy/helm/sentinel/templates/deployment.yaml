@@ -58,6 +58,8 @@ spec:
               value: {{ .Values.config.purgeIntervalMinutes | quote }}
             - name: stream_native
               value: {{ .Values.config.streamNative | quote }}
+            - name: detection_workers
+              value: {{ .Values.config.detectionWorkers | quote }}
             {{- with .Values.config.ollamaBaseUrl }}
             - name: ollama_base_url
               value: {{ . | quote }}

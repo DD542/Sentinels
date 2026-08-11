@@ -1,7 +1,9 @@
 from __future__ import annotations
 import asyncio
+import os
 import secrets
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,9 +51,27 @@ def enforce_strict_mode() -> None:
             "SENTINEL_STRICT : demarrage refuse — " + " ; ".join(problems))
 
 
+def _borner_les_fils_de_detection() -> None:
+    """Borne le pool de fils utilisé par la détection.
+
+    `asyncio.to_thread` s'appuie sur l'exécuteur par défaut, dont la
+    taille suit le nombre de requêtes. Or la détection est un travail
+    **CPU** (spaCy, Presidio) : au-delà du nombre de cœurs, les fils se
+    disputent le GIL et le débit s'effondre au lieu de plafonner. Un
+    pool borné fait la seule chose souhaitable — mettre en file plutôt
+    que thrasher."""
+    workers = settings.detection_workers or (os.cpu_count() or 4)
+    asyncio.get_running_loop().set_default_executor(
+        ThreadPoolExecutor(max_workers=workers,
+                           thread_name_prefix="sentinel-detection"))
+    logs.get_logger("main").info("pool de detection borne", extra={
+        "event": "detection_pool", "workers": workers})
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logs.configure()
+    _borner_les_fils_de_detection()
     if settings.strict_mode:
         enforce_strict_mode()
     await db.init_db()

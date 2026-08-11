@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     # admin/dashboard non définis). Fail-closed plutôt que fail-open.
     strict_mode: bool = False
     # Détection
+    # Nombre de fils d'exécution pour la détection (travail CPU :
+    # spaCy, Presidio). 0 = nombre de cœurs. Au-delà, les fils se
+    # disputent le GIL et le débit S'EFFONDRE au lieu de plafonner :
+    # mesuré 70 req/s à 8 requêtes simultanées, 12 req/s à 16.
+    detection_workers: int = 0
     l3_similarity_threshold: float = 0.86
     l3_simhash_max_distance: int = 3
     ambiguity_low: float = 0.35

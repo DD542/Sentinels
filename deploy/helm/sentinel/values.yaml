@@ -37,6 +37,9 @@ config:
   auditRetentionDays: 0
   purgeIntervalMinutes: 60
   streamNative: true
+  # Fils de détection (travail CPU). 0 = nombre de cœurs vus par le
+  # conteneur. À aligner sur `resources.limits.cpu`.
+  detectionWorkers: 0
   ollamaBaseUrl: ""           # juge local L4 (optionnel)
 
 # ---------------------------------------------------------------

@@ -37,6 +37,7 @@
 - [Démarrage rapide](#démarrage-rapide)
 - [Utilisation](#utilisation)
 - [Référence API](#référence-api)
+- [Performance mesurée](#performance-mesurée)
 - [Déploiement en production](#déploiement-en-production)
 - [Tests et benchmark](#tests-et-benchmark)
 - [Limites connues](#limites-connues)
@@ -152,7 +153,7 @@ Le flux d'un prompt : dé-obfuscation → détection multi-couches → décision
 | Persistance | Postgres (Neon) + repli mémoire automatique |
 | Frontend | Vue 3, Vite, WebSocket natif, zéro dépendance graphique |
 | Fournisseurs IA | Anthropic, OpenAI, Groq |
-| Tests & CI | pytest, pytest-asyncio, pytest-cov, GitHub Actions |
+| Tests & CI | pytest, pytest-asyncio, pytest-cov, GitHub Actions, test de charge |
 | Déploiement | Docker, Helm (Kubernetes), Trivy, SBOM CycloneDX, pip-audit |
 | Authentification | OpenID Connect (PyJWT + JWKS), sessions chiffrées Fernet |
 
@@ -274,6 +275,24 @@ Le fournisseur reçoit `Hugo Blanc` et un IBAN factice valide. L'employé reçoi
 | `/dashboard/ws` | WS | token dashboard¹ | Flux temps réel |
 
 ¹ *Si `DASHBOARD_TOKEN` est défini : header `X-Dashboard-Token` pour l'API, second sous-protocole WebSocket (`["sentinel.v1", token]`) pour le flux. Vide = accès libre (dev/démo).*
+
+### Performance mesurée
+
+Mesures reproductibles (`python backend/tests/loadtest.py`), un seul
+processus, sans appel fournisseur :
+
+| Requêtes simultanées | p50 | p95 | Débit |
+|---:|---:|---:|---:|
+| 1 | 13 ms | 14 ms | 71 req/s |
+| 8 | 98 ms | 168 ms | 66 req/s |
+| 16 | 190 ms | 530 ms | 58 req/s |
+
+**La latence ne dérive pas avec l'historique** : journal vide → p50 48 ms ;
+journal à **50 000 entrées** → p50 51 ms. (Avant le passage à une
+vérification à coût constant, 50 000 entrées ajoutaient 2,5 secondes à
+*chaque* requête.)
+
+Détail, limites de la mesure et protocole : [`docs/performance.md`](docs/performance.md).
 
 ### Déploiement en production
 
