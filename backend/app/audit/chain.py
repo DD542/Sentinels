@@ -20,10 +20,16 @@ _GENESIS = "0" * 64
 _CHAIN: list[dict] = []
 _CACHE_MAX = 5000
 
-# État O(1) du journal. Le chaînage n'a besoin que du hash de tête :
-# relire toute la chaîne pour connaître le précédent était le vrai coût.
-_HEAD: str = _GENESIS
-_COUNT: int = 0
+# Chaîne de l'exploitant : actions d'administration, et toutes les
+# entrées antérieures au cloisonnement (elles n'ont pas de tenant).
+GLOBAL = "_global"
+
+# État O(1) du journal, PAR TENANT. Le chaînage n'a besoin que du hash
+# de tête : relire la chaîne pour connaître le précédent était le vrai
+# coût. Chaque client a la sienne — sans quoi exporter le journal d'un
+# client révélerait l'existence des entrées des autres.
+_HEADS: dict[str, str] = {}
+_COUNTS: dict[str, int] = {}
 
 # Dernière vérification connue. C'est ce que les réponses d'API
 # rapportent : un état daté, pas une revérification à chaque requête.
@@ -36,14 +42,22 @@ _LAST_CHECK: dict = {"verified": True, "at": None,
 _VERIFIED_UPTO: int = 0
 
 
-def head() -> str:
-    """Hash de tête — O(1)."""
-    return _HEAD
+def head(tenant: str = GLOBAL) -> str:
+    """Hash de tête d'une chaîne — O(1)."""
+    return _HEADS.get(tenant, _GENESIS)
 
 
-def count() -> int:
-    """Nombre total d'entrées scellées — O(1)."""
-    return _COUNT
+def count(tenant: str | None = None) -> int:
+    """Entrées scellées : d'un tenant, ou toutes — O(1)."""
+    if tenant is None:
+        return sum(_COUNTS.values())
+    return _COUNTS.get(tenant, 0)
+
+
+def tenants() -> list[str]:
+    """Chaînes existantes. Le nom d'un tenant est un identifiant de
+    client : cette liste ne sort jamais vers un client."""
+    return sorted(_COUNTS)
 
 
 def integrity_status() -> dict:
@@ -62,28 +76,35 @@ def integrity_status() -> dict:
         "verified_at": _LAST_CHECK["at"],
         "verified_entries": _LAST_CHECK["entries"],
         "scope": _LAST_CHECK["scope"],
-        "entries": _COUNT,
-        "head_hash": _HEAD if _COUNT else None,
+        "entries": count(),
+        "head_hash": _HEADS.get(GLOBAL) if _COUNTS.get(GLOBAL) else None,
+        "chains": len(_COUNTS),
     }
 
 
+def _tenant_of(entry: dict) -> str:
+    return entry.get("tenant") or GLOBAL
+
+
 def _remember(entry: dict) -> None:
-    """Ajoute au cache et met à jour l'état O(1). Avec persistance, le
-    cache est borné : la base reste la source de vérité."""
-    global _HEAD, _COUNT
+    """Ajoute au cache et met à jour l'état O(1) de SA chaîne. Avec
+    persistance, le cache est borné : la base reste la source de vérité."""
+    tenant = _tenant_of(entry)
     _CHAIN.append(entry)
-    _HEAD = entry["hash"]
-    _COUNT += 1
+    _HEADS[tenant] = entry["hash"]
+    _COUNTS[tenant] = _COUNTS.get(tenant, 0) + 1
     if db.is_enabled() and len(_CHAIN) > _CACHE_MAX:
         del _CHAIN[:len(_CHAIN) - _CACHE_MAX]
 
 
 def _reset() -> None:
     """Remet le journal à zéro — utilisé par les tests."""
-    global _HEAD, _COUNT, _VERIFIED_UPTO
+    global _VERIFIED_UPTO
     _CHAIN.clear()
     _SHREDDED.clear()
-    _HEAD, _COUNT, _VERIFIED_UPTO = _GENESIS, 0, 0
+    _HEADS.clear()
+    _COUNTS.clear()
+    _VERIFIED_UPTO = 0
     _LAST_CHECK.update({"verified": True, "at": None,
                         "entries": 0, "scope": "genese"})
 
@@ -149,7 +170,8 @@ async def _get_or_create_key_db(entity_id: str) -> bytes | None:
 
 
 def _build_entry(action, entity_type, entity_id, cipher, prev_hash,
-                 subject_ref: str | None = None) -> dict:
+                 subject_ref: str | None = None,
+                 tenant: str = GLOBAL) -> dict:
     entry = {
         "ts": time.time(),
         "action": action,
@@ -163,6 +185,12 @@ def _build_entry(action, entity_type, entity_id, cipher, prev_hash,
     # vérifiable à l'identique.
     if subject_ref:
         entry["subject_ref"] = subject_ref
+    # Scellé lui aussi : sans ça, on pourrait déplacer une entrée d'une
+    # chaîne à l'autre sans casser le hachage. Absent pour la chaîne de
+    # l'exploitant, dont les entrées historiques ont été scellées sans
+    # ce champ et doivent rester vérifiables à l'identique.
+    if tenant != GLOBAL:
+        entry["tenant"] = tenant
     entry["hash"] = _seal(entry, prev_hash)
     return entry
 
@@ -172,8 +200,9 @@ def _row_to_entry(row) -> dict:
     existe pour toutes les lignes, mais les anciennes ont été scellées
     sans ce champ."""
     entry = dict(row)
-    if entry.get("subject_ref") is None:
-        entry.pop("subject_ref", None)
+    for champ in ("subject_ref", "tenant"):
+        if entry.get(champ) is None:
+            entry.pop(champ, None)
     return entry
 
 
@@ -189,23 +218,28 @@ def _key_id(entry: dict) -> str:
 # ============================================================
 
 def append(action: str, entity_type: str, entity_id: str, detail: dict,
-           subject: str | None = None) -> dict:
+           subject: str | None = None, tenant: str = GLOBAL) -> dict:
     ref = subjects.subject_ref(subject)
     dek = _get_or_create_key_mem(ref or entity_id)
     # dek None (entité oubliée) : on scelle un marqueur non déchiffrable.
     cipher = crypto.encrypt_detail(detail, dek) if dek else "SHREDDED"
-    entry = _build_entry(action, entity_type, entity_id, cipher, _HEAD, ref)
+    entry = _build_entry(action, entity_type, entity_id, cipher,
+                         head(tenant), ref, tenant)
     _remember(entry)
     return entry
 
 
-def verify_integrity() -> bool:
-    prev = _GENESIS
+def verify_integrity(tenant: str | None = None) -> bool:
+    """Vérifie une chaîne, ou toutes. Chaque tenant se vérifie
+    indépendamment : c'est tout l'intérêt du cloisonnement."""
+    par_chaine: dict[str, list[dict]] = {}
     for entry in _CHAIN:
-        expected = _seal({k: v for k, v in entry.items() if k != "hash"}, prev)
-        if entry["hash"] != expected or entry["prev_hash"] != prev:
+        par_chaine.setdefault(_tenant_of(entry), []).append(entry)
+    cibles = [tenant] if tenant else list(par_chaine)
+    for nom in cibles:
+        ok, _ = _verify_entries(par_chaine.get(nom, []), _GENESIS)
+        if not ok:
             return False
-        prev = entry["hash"]
     return True
 
 
@@ -237,9 +271,8 @@ def forget(entity_id: str) -> int:
 # ============================================================
 
 async def load_from_db() -> None:
-    """Recharge l'état du journal au démarrage : hash de tête, nombre
-    d'entrées, fenêtre récente et keyring."""
-    global _HEAD, _COUNT
+    """Recharge l'état du journal au démarrage : hash de tête et nombre
+    d'entrées PAR CHAÎNE, fenêtre récente et keyring."""
     if not db.is_enabled():
         return
     try:
@@ -249,15 +282,26 @@ async def load_from_db() -> None:
             # sens, la base est la source de vérité.
             rows = await con.fetch(
                 "SELECT ts, action, entity_type, entity_id, cipher, prev_hash, "
-                "hash, subject_ref FROM audit_chain ORDER BY seq DESC LIMIT $1",
-                _CACHE_MAX)
-            total = await con.fetchrow("SELECT COUNT(*) AS n FROM audit_chain")
+                "hash, subject_ref, tenant FROM audit_chain "
+                "ORDER BY seq DESC LIMIT $1", _CACHE_MAX)
+            # Tête et compte de CHAQUE chaîne, en une requête.
+            etats = await con.fetch(
+                "SELECT COALESCE(tenant, $1) AS t, COUNT(*) AS n, "
+                "(SELECT hash FROM audit_chain i "
+                " WHERE COALESCE(i.tenant, $1) = COALESCE(o.tenant, $1) "
+                " ORDER BY i.seq DESC LIMIT 1) AS tete "
+                "FROM audit_chain o GROUP BY COALESCE(tenant, $1), tenant",
+                GLOBAL)
             keys = await con.fetch("SELECT entity_id, wrapped FROM audit_keys")
         _CHAIN.clear()
         for r in reversed(rows):
             _CHAIN.append(_row_to_entry(r))
-        _COUNT = int(total["n"]) if total else len(_CHAIN)
-        _HEAD = _CHAIN[-1]["hash"] if _CHAIN else _GENESIS
+        _HEADS.clear()
+        _COUNTS.clear()
+        for e in etats:
+            _COUNTS[e["t"]] = _COUNTS.get(e["t"], 0) + int(e["n"])
+            if e["tete"]:
+                _HEADS[e["t"]] = e["tete"]
         crypto._KEYRING.clear()
         for k in keys:
             crypto._KEYRING[k["entity_id"]] = k["wrapped"]
@@ -268,7 +312,8 @@ async def load_from_db() -> None:
 
 
 async def append_async(action: str, entity_type: str, entity_id: str,
-                       detail: dict, subject: str | None = None) -> dict:
+                       detail: dict, subject: str | None = None,
+                       tenant: str = GLOBAL) -> dict:
     """`subject` : la valeur identifiant la personne concernée (nom, IBAN…).
     Elle n'est jamais stockée : seule sa référence aveugle l'est, et elle
     sert de clé de chiffrement — l'oubli d'une personne ne touche donc
@@ -288,7 +333,8 @@ async def append_async(action: str, entity_type: str, entity_id: str,
         dek = _get_or_create_key_mem(key_id)
 
     cipher = crypto.encrypt_detail(detail, dek) if dek else "SHREDDED"
-    entry = _build_entry(action, entity_type, entity_id, cipher, _HEAD, ref)
+    entry = _build_entry(action, entity_type, entity_id, cipher,
+                         head(tenant), ref, tenant)
     _remember(entry)
 
     if db.is_enabled():
@@ -297,11 +343,12 @@ async def append_async(action: str, entity_type: str, entity_id: str,
                 await con.execute(
                     "INSERT INTO audit_chain "
                     "(ts, action, entity_type, entity_id, cipher, prev_hash, "
-                    "hash, subject_ref) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                    "hash, subject_ref, tenant) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
                     entry["ts"], entry["action"], entry["entity_type"],
                     entry["entity_id"], entry["cipher"], entry["prev_hash"],
                     entry["hash"], ref,
+                    None if tenant == GLOBAL else tenant,
                 )
         except Exception as e:
             _log.warning("ecriture audit DB echouee", extra={
@@ -471,29 +518,31 @@ def _record_check(verified: bool, entries: int, scope: str) -> None:
             "event": "audit_integrity_failure", "scope": scope})
 
 
-async def _load_checkpoint() -> tuple[int, str]:
-    """Dernier point vérifié : (seq, hash). (0, genèse) si aucun."""
+async def _load_checkpoint(tenant: str) -> tuple[int, str]:
+    """Dernier point vérifié de CETTE chaîne : (seq, hash)."""
     if not db.is_enabled():
         return 0, _GENESIS
     try:
         async with db.pool().acquire() as con:
             row = await con.fetchrow(
-                "SELECT seq, hash FROM audit_checkpoint WHERE id = 1")
+                "SELECT seq, hash FROM audit_checkpoints WHERE tenant = $1",
+                tenant)
         return (int(row["seq"]), row["hash"]) if row else (0, _GENESIS)
     except Exception:
         return 0, _GENESIS
 
 
-async def _save_checkpoint(seq: int, hash_: str) -> None:
+async def _save_checkpoint(tenant: str, seq: int, hash_: str) -> None:
     if not db.is_enabled():
         return
     try:
         async with db.pool().acquire() as con:
             await con.execute(
-                "INSERT INTO audit_checkpoint (id, seq, hash, verified_at) "
-                "VALUES (1, $1, $2, $3) ON CONFLICT (id) DO UPDATE SET "
+                "INSERT INTO audit_checkpoints (tenant, seq, hash, verified_at) "
+                "VALUES ($1, $2, $3, $4) ON CONFLICT (tenant) DO UPDATE SET "
                 "seq = EXCLUDED.seq, hash = EXCLUDED.hash, "
-                "verified_at = EXCLUDED.verified_at", seq, hash_, time.time())
+                "verified_at = EXCLUDED.verified_at",
+                tenant, seq, hash_, time.time())
     except Exception as e:
         _log.warning("ecriture du point de controle echouee", extra={
             "event": "db_error", "op": "save_checkpoint",
@@ -513,69 +562,147 @@ async def verify_incremental() -> dict:
     global _VERIFIED_UPTO
 
     if not db.is_enabled():
+        # Repli mémoire : on revérifie les entrées non encore validées,
+        # chaîne par chaîne (leurs entrées sont entrelacées dans _CHAIN).
         nouvelles = _CHAIN[_VERIFIED_UPTO:]
-        depart = (_CHAIN[_VERIFIED_UPTO - 1]["hash"]
-                  if _VERIFIED_UPTO else _GENESIS)
-        ok, _ = _verify_entries(nouvelles, depart)
+        deja: dict[str, str] = {}
+        for e in _CHAIN[:_VERIFIED_UPTO]:
+            deja[_tenant_of(e)] = e["hash"]
+        par_chaine: dict[str, list[dict]] = {}
+        for e in nouvelles:
+            par_chaine.setdefault(_tenant_of(e), []).append(e)
+        ok = all(_verify_entries(v, deja.get(k, _GENESIS))[0]
+                 for k, v in par_chaine.items())
         if ok:
             _VERIFIED_UPTO = len(_CHAIN)
         _record_check(ok, len(nouvelles), "incrementale")
         return {"verified": ok, "checked": len(nouvelles),
                 "scope": "incrementale"}
 
-    seq, prev = await _load_checkpoint()
+    total, tout_ok = 0, True
+    for nom in await _tenants_db():
+        seq, prev = await _load_checkpoint(nom)
+        try:
+            async with db.pool().acquire() as con:
+                rows = await con.fetch(
+                    "SELECT seq, ts, action, entity_type, entity_id, cipher, "
+                    "prev_hash, hash, subject_ref, tenant FROM audit_chain "
+                    "WHERE COALESCE(tenant, $1) = $2 AND seq > $3 "
+                    "ORDER BY seq ASC", GLOBAL, nom, seq)
+        except Exception as e:
+            _log.warning("verification incrementale impossible", extra={
+                "event": "db_error", "op": "verify_incremental",
+                "error": f"{type(e).__name__}: {e}"})
+            return {"verified": None, "checked": 0, "scope": "incrementale"}
+
+        entrees, dernier_seq = [], seq
+        for r in rows:
+            e = _row_to_entry(r)
+            dernier_seq = int(e.pop("seq"))
+            entrees.append(e)
+        if not entrees:
+            continue
+        ok, dernier_hash = _verify_entries(entrees, prev)
+        total += len(entrees)
+        tout_ok = tout_ok and ok
+        if ok:
+            await _save_checkpoint(nom, dernier_seq, dernier_hash)
+
+    _record_check(tout_ok, total, "incrementale")
+    return {"verified": tout_ok, "checked": total, "scope": "incrementale"}
+
+
+async def _tenants_db() -> list[str]:
+    """Chaînes présentes en base."""
+    if not db.is_enabled():
+        return list(_COUNTS) or [GLOBAL]
     try:
         async with db.pool().acquire() as con:
             rows = await con.fetch(
-                "SELECT seq, ts, action, entity_type, entity_id, cipher, "
-                "prev_hash, hash, subject_ref FROM audit_chain "
-                "WHERE seq > $1 ORDER BY seq ASC", seq)
-    except Exception as e:
-        _log.warning("verification incrementale impossible", extra={
-            "event": "db_error", "op": "verify_incremental",
-            "error": f"{type(e).__name__}: {e}"})
-        return {"verified": None, "checked": 0, "scope": "incrementale"}
-
-    entrees = []
-    dernier_seq = seq
-    for r in rows:
-        e = _row_to_entry(r)
-        dernier_seq = int(e.pop("seq"))
-        entrees.append(e)
-
-    ok, dernier_hash = _verify_entries(entrees, prev)
-    if ok and entrees:
-        await _save_checkpoint(dernier_seq, dernier_hash)
-    _record_check(ok, len(entrees), "incrementale")
-    return {"verified": ok, "checked": len(entrees), "scope": "incrementale"}
+                "SELECT DISTINCT COALESCE(tenant, $1) AS t FROM audit_chain",
+                GLOBAL)
+        return [r["t"] for r in rows] or [GLOBAL]
+    except Exception:
+        return list(_COUNTS) or [GLOBAL]
 
 
-async def verify_integrity_async() -> bool:
+async def verify_integrity_async(tenant: str | None = None) -> bool:
     """Vérifie la chaîne **entière**, depuis la genèse. Coût proportionnel
     à l'historique : à réserver aux vérifications d'audit (rapport de
     conformité, endpoint dédié, passe périodique). Le chemin des
     requêtes utilise `integrity_status()`, qui est en O(1)."""
     if db.is_enabled():
         try:
-            async with db.pool().acquire() as con:
-                rows = await con.fetch(
-                    "SELECT seq, ts, action, entity_type, entity_id, cipher, "
-                    "prev_hash, hash, subject_ref FROM audit_chain "
-                    "ORDER BY seq ASC"
-                )
-            entrees, dernier_seq = [], 0
-            for r in rows:
-                e = _row_to_entry(r)
-                dernier_seq = int(e.pop("seq"))
-                entrees.append(e)
-            ok, dernier_hash = _verify_entries(entrees, _GENESIS)
-            _record_check(ok, len(entrees), "complete")
-            if ok and entrees:
-                await _save_checkpoint(dernier_seq, dernier_hash)
-            return ok
+            cibles = [tenant] if tenant else await _tenants_db()
+            total, tout_ok = 0, True
+            for nom in cibles:
+                async with db.pool().acquire() as con:
+                    rows = await con.fetch(
+                        "SELECT seq, ts, action, entity_type, entity_id, "
+                        "cipher, prev_hash, hash, subject_ref, tenant "
+                        "FROM audit_chain WHERE COALESCE(tenant, $1) = $2 "
+                        "ORDER BY seq ASC", GLOBAL, nom)
+                entrees, dernier_seq = [], 0
+                for r in rows:
+                    e = _row_to_entry(r)
+                    dernier_seq = int(e.pop("seq"))
+                    entrees.append(e)
+                ok, dernier_hash = _verify_entries(entrees, _GENESIS)
+                total += len(entrees)
+                tout_ok = tout_ok and ok
+                if ok and entrees:
+                    await _save_checkpoint(nom, dernier_seq, dernier_hash)
+            _record_check(tout_ok, total, "complete")
+            return tout_ok
         except Exception:
             pass  # repli sur le cache mémoire
 
-    ok = verify_integrity()
-    _record_check(ok, len(_CHAIN), "complete")
+    ok = verify_integrity(tenant)
+    _record_check(ok, count(tenant), "complete")
     return ok
+
+
+# ============================================================
+# Export par tenant
+# ============================================================
+
+async def export_tenant(tenant: str, limit: int = 5000) -> dict:
+    """Journal d'UN client, exportable et vérifiable en chaînage.
+
+    C'est ce que le cloisonnement rend possible : jusqu'ici, exporter le
+    journal d'un client aurait révélé l'existence des entrées des autres,
+    puisque tout était chaîné ensemble.
+
+    Le détail reste **chiffré** : les clés appartiennent à l'exploitant.
+    Le client peut donc vérifier le **chaînage** (aucune entrée retirée
+    ni réordonnée) mais pas les sceaux HMAC, qui exigent la clé d'audit —
+    limite assumée et documentée."""
+    entrees: list[dict] = []
+    if db.is_enabled():
+        try:
+            async with db.pool().acquire() as con:
+                rows = await con.fetch(
+                    "SELECT ts, action, entity_type, entity_id, cipher, "
+                    "prev_hash, hash, subject_ref, tenant FROM audit_chain "
+                    "WHERE tenant = $1 ORDER BY seq ASC LIMIT $2",
+                    tenant, limit)
+            entrees = [_row_to_entry(r) for r in rows]
+        except Exception as e:
+            _log.warning("export du journal echoue", extra={
+                "event": "db_error", "op": "export_tenant",
+                "error": f"{type(e).__name__}: {e}"})
+    else:
+        entrees = [e for e in _CHAIN if _tenant_of(e) == tenant][:limit]
+
+    chainage_ok, _ = _verify_entries(entrees, _GENESIS)
+    return {
+        "tenant": tenant,
+        "entries": entrees,
+        "count": len(entrees),
+        "truncated": len(entrees) >= limit,
+        "chain_linkage_valid": chainage_ok,
+        "head_hash": entrees[-1]["hash"] if entrees else None,
+        "note": ("Le detail est chiffre : les cles appartiennent a "
+                 "l'exploitant. Le chainage est verifiable ici ; les "
+                 "sceaux HMAC exigent la cle d'audit."),
+    }

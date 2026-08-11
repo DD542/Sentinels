@@ -29,7 +29,7 @@ explicite et non négociable :
 
 | Table | Contenu | Chiffrement | Conservation |
 |:---|:---|:---|:---|
-| `audit_chain` | Une ligne par décision : horodatage, action, type d'entité, hash chaîné. Le *détail* (dont la valeur détectée) est dans un champ chiffré. | **Fernet** (AES-128-CBC + HMAC), une clé de données distincte **par entité** | Les lignes sont conservées (la chaîne doit rester vérifiable) ; au-delà d'`AUDIT_RETENTION_DAYS` la **clé est détruite** et le détail devient illisible |
+| `audit_chain` | Une ligne par décision, **cloisonnée par client** (une chaîne de hachage par organisation) : horodatage, action, type d'entité, hash chaîné. Le *détail* (dont la valeur détectée) est dans un champ chiffré. | **Fernet** (AES-128-CBC + HMAC), une clé de données distincte **par entité** | Les lignes sont conservées (la chaîne doit rester vérifiable) ; au-delà d'`AUDIT_RETENTION_DAYS` la **clé est détruite** et le détail devient illisible |
 | `audit_keys` | La clé de chiffrement de chaque entité, elle-même **enveloppée** par une clé maître dérivée d'`AUDIT_HMAC_KEY` | Fernet (KEK à domaine séparé) | Tant que l'entité n'est pas oubliée |
 | `vault` | La correspondance token factice → valeur réelle, nécessaire pour restaurer la vraie donnée dans la réponse | Fernet (clé dérivée de `VAULT_MASTER_KEY`) | **`VAULT_TTL_HOURS`, 24 h par défaut** — lignes supprimées par la purge périodique |
 | `api_keys` | Empreinte HMAC de chaque clé client, statut actif/révoqué | Non réversible par construction | Permanente (révocation = passage à inactif) |
@@ -124,6 +124,32 @@ Elle traite les deux stocks de façon **volontairement dissymétrique** :
 C'est le même mécanisme que l'effacement à la demande, appliqué
 automatiquement par l'écoulement du temps : **on garde la preuve, on
 perd la donnée.**
+
+## Cloisonnement par client
+
+Chaque organisation dispose de **sa propre chaîne de hachage**. Les
+entrées ne sont plus chaînées entre clients : la chaîne d'un client se
+vérifie seule, et une altération chez l'un n'invalide pas la preuve de
+l'autre.
+
+C'est ce qui rend l'export possible :
+
+```bash
+curl -H "X-SENTINEL-Key: sntl_…" http://<sentinel>/audit/export
+```
+
+Vous récupérez **votre** journal, et rien d'autre — jusqu'ici, un tel
+export aurait révélé l'existence des entrées des autres clients, puisque
+tout était chaîné ensemble.
+
+> **Ce que vous pouvez vérifier vous-même dans l'export** : le
+> *chaînage* — qu'aucune entrée n'a été retirée ni réordonnée. Les
+> **sceaux HMAC** exigent la clé d'audit, qui reste chez l'exploitant :
+> vous ne pouvez donc pas les recalculer. C'est une limite assumée ;
+> une vérification totalement autonome supposerait une clé par client.
+
+Les actions d'administration (création de clés, révocations) restent dans
+la chaîne de l'exploitant : ce sont ses opérations, pas vos traitements.
 
 ## Comment le vérifier vous-même
 

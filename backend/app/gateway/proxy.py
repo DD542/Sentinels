@@ -31,7 +31,8 @@ async def _sanitize(text: str, client_id: str) -> tuple[str, list[dict], bool]:
 
     if result.evasion_attempts:
         entry = await chain.append_async("EVASION_ATTEMPT", "GATEWAY", client_id,
-                                         {"patterns": result.evasion_attempts})
+                                         {"patterns": result.evasion_attempts},
+                                         tenant=client_id)
         await events.publish({
             "kind": "decision", "client": client_id, "action": "EVASION_FLAG",
             "entity_type": "EVASION", "layer": "L0",
@@ -45,7 +46,7 @@ async def _sanitize(text: str, client_id: str) -> tuple[str, list[dict], bool]:
             "BLOCK_REQUEST", "IP_LEAK",
             str(leak.meta.get("source_doc")
                 or ",".join(leak.meta.get("source_docs", ["?"]))),
-            {"confidence": leak.confidence, **leak.meta})
+            {"confidence": leak.confidence, **leak.meta}, tenant=client_id)
         await events.publish({
             "kind": "decision", "client": client_id, "action": "BLOCK_REQUEST",
             "entity_type": "IP_LEAK", "layer": "L3",
@@ -71,7 +72,8 @@ async def _sanitize(text: str, client_id: str) -> tuple[str, list[dict], bool]:
             action.value, f.entity_type.value,
             f"{f.entity_type.value}:{f.start}",
             {"confidence": f.confidence, "layer": f.layer},
-            subject=f.value if f.entity_type in IDENTIFYING_TYPES else None)
+            subject=f.value if f.entity_type in IDENTIFYING_TYPES else None,
+            tenant=client_id)
         decisions.append({"type": f.entity_type.value, "action": action.value,
                           "layer": f.layer, "audit_hash": entry["hash"][:12]})
         await events.publish({
@@ -85,7 +87,7 @@ async def _sanitize(text: str, client_id: str) -> tuple[str, list[dict], bool]:
         entry = await chain.append_async(
             "BLOCK", f.entity_type.value, f"{f.entity_type.value}:obf",
             {"confidence": f.confidence, "layer": f.layer,
-             "obfuscation": f.meta.get("obfuscation")})
+             "obfuscation": f.meta.get("obfuscation")}, tenant=client_id)
         decisions.append({"type": f.entity_type.value, "action": "BLOCK",
                           "layer": f.layer, "obfuscation": f.meta.get("obfuscation"),
                           "audit_hash": entry["hash"][:12]})

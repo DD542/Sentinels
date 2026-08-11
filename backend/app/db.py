@@ -145,6 +145,21 @@ async def init_db() -> None:
                 -- sans jamais stocker son identité en clair.
                 ALTER TABLE audit_chain
                     ADD COLUMN IF NOT EXISTS subject_ref TEXT;
+
+                -- Cloisonnement par client : une chaine de hachage par
+                -- tenant. NULL = chaine de l'exploitant (et entrees
+                -- anterieures au cloisonnement).
+                ALTER TABLE audit_chain
+                    ADD COLUMN IF NOT EXISTS tenant TEXT;
+                CREATE INDEX IF NOT EXISTS idx_audit_tenant
+                    ON audit_chain (tenant, seq);
+
+                CREATE TABLE IF NOT EXISTS audit_checkpoints (
+                    tenant      TEXT PRIMARY KEY,
+                    seq         BIGINT NOT NULL,
+                    hash        TEXT NOT NULL,
+                    verified_at DOUBLE PRECISION NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS idx_audit_subject
                     ON audit_chain (subject_ref);
             """)

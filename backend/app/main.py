@@ -271,6 +271,21 @@ class PolicyRequest(BaseModel):
     actions: dict[str, str] = {}
 
 
+@app.get("/audit/export")
+async def export_audit(client_id: str = Depends(auth.verify_key),
+                       limit: int = 5000) -> dict:
+    """Journal d'audit **du client authentifié**, exportable.
+
+    C'est ce que le cloisonnement rend possible : tant que toutes les
+    entrées etaient chaînées ensemble, exporter le journal d'un client
+    aurait revele l'existence de celles des autres.
+
+    Le detail reste chiffre — les cles appartiennent a l'exploitant. Le
+    client verifie donc le CHAINAGE (aucune entree retiree ni
+    reordonnee), pas les sceaux HMAC."""
+    return await chain.export_tenant(client_id, limit=min(limit, 20000))
+
+
 @app.get("/policy")
 async def read_policy(client_id: str = Depends(auth.verify_key)) -> dict:
     """Politique de detection du client authentifie."""
@@ -298,7 +313,7 @@ async def write_policy(req: PolicyRequest,
     entry = await chain.append_async(
         "POLICY_UPDATE", "POLICY", f"policy:{client_id}",
         {"client": client_id, "policy": applique,
-         "degradations": degradations})
+         "degradations": degradations}, tenant=client_id)
     return {"client_id": client_id, **applique,
             "degradations": degradations,
             "audit_hash": entry["hash"][:12]}
@@ -316,7 +331,7 @@ async def ingest(req: IngestRequest,
         req.doc_id, client_id) > 0
     await chain.append_async("CORPUS_INGEST", "DOCUMENT", req.doc_id,
                              {"shingles": result["shingles"], "chunks": result["chunks"],
-                              "client": client_id})
+                              "client": client_id}, tenant=client_id)
     return result
 
 
@@ -331,7 +346,7 @@ async def remove_document(doc_id: str,
                             detail="Document inconnu dans votre corpus")
     entry = await chain.append_async("CORPUS_REMOVE", "DOCUMENT", doc_id,
                                      {"shingles_removed": removed,
-                                      "client": client_id})
+                                      "client": client_id}, tenant=client_id)
     return {"doc_id": doc_id, "shingles_removed": removed,
             "audit_hash": entry["hash"][:12]}
 
@@ -354,7 +369,8 @@ async def scan(req: ScanRequest,
     evasion_flag = None
     if result.evasion_attempts:
         entry = await chain.append_async("EVASION_ATTEMPT", "GATEWAY", client_id,
-                                         {"patterns": result.evasion_attempts})
+                                         {"patterns": result.evasion_attempts},
+                                         tenant=client_id)
         evasion_flag = entry["hash"][:12]
         await events.publish({
             "kind": "decision", "client": client_id, "action": "EVASION_FLAG",
@@ -369,7 +385,7 @@ async def scan(req: ScanRequest,
             "BLOCK_REQUEST", "IP_LEAK",
             str(leak.meta.get("source_doc")
                 or ",".join(leak.meta.get("source_docs", ["?"]))),
-            {"confidence": leak.confidence, **leak.meta})
+            {"confidence": leak.confidence, **leak.meta}, tenant=client_id)
         await events.publish({
             "kind": "decision", "client": client_id, "action": "BLOCK_REQUEST",
             "entity_type": "IP_LEAK", "layer": "L3",
@@ -407,7 +423,8 @@ async def scan(req: ScanRequest,
             # Indexe la personne concernée (index aveugle) pour les
             # seules données identifiantes : un secret technique ou une
             # fuite documentaire ne concerne aucun individu.
-            subject=f.value if f.entity_type in IDENTIFYING_TYPES else None)
+            subject=f.value if f.entity_type in IDENTIFYING_TYPES else None,
+            tenant=client_id)
         await events.publish({
             "kind": "decision", "client": client_id, "action": action.value,
             "entity_type": f.entity_type.value, "layer": f.layer,
@@ -423,7 +440,7 @@ async def scan(req: ScanRequest,
         entry = await chain.append_async(
             "BLOCK", f.entity_type.value, f"{f.entity_type.value}:obf",
             {"confidence": f.confidence, "layer": f.layer,
-             "obfuscation": f.meta.get("obfuscation")})
+             "obfuscation": f.meta.get("obfuscation")}, tenant=client_id)
         await events.publish({
             "kind": "decision", "client": client_id, "action": "BLOCK",
             "entity_type": f.entity_type.value, "layer": f.layer,
