@@ -31,6 +31,11 @@ EVASION_FLAGS = Counter(
     "sentinel_evasion_flags_total",
     "Tentatives d'ingenierie sociale contre la passerelle (drapeaux L0)")
 
+POLICY_SUPPRESSED = Counter(
+    "sentinel_policy_suppressed_total",
+    "Detections ecartees par la politique du client (faux positifs regles)",
+    ["reason"])
+
 RATE_LIMITED = Counter(
     "sentinel_rate_limited_total",
     "Requetes rejetees en 429 (quota par client depasse)")

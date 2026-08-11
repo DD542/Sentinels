@@ -61,7 +61,7 @@ async def _sanitize(text: str, client_id: str) -> tuple[str, list[dict], bool]:
     by_value = [f for f in result.findings if "obfuscation" in f.meta]
 
     for f in sorted(positional, key=lambda x: x.start, reverse=True):
-        action = engine.decide(f)
+        action = engine.decide(f, client_id)
         if action == Action.BLOCK:
             sanitized = sanitized[:f.start] + "[BLOCKED]" + sanitized[f.end:]
         elif action == Action.TOKENIZE:

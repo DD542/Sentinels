@@ -111,6 +111,14 @@ async def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_corpus_chunks_client
                     ON corpus_chunks (client_id);
 
+                -- Politique de detection par client : exceptions,
+                -- seuils et actions. Cloisonnee comme le corpus.
+                CREATE TABLE IF NOT EXISTS client_policies (
+                    client_id  TEXT PRIMARY KEY,
+                    policy     TEXT NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+
                 -- Point de controle de verification : jusqu'ou la chaine
                 -- a deja ete verifiee. Permet de ne revalider que les
                 -- entrees ajoutees depuis, au lieu de tout relire a

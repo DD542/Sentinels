@@ -28,6 +28,7 @@ from .audit import chain
 from .audit import subjects as audit_subjects
 from . import events
 from . import db
+from . import policy
 
 settings = get_settings()
 router = APIRouter()
@@ -90,6 +91,9 @@ async def build_report() -> dict:
             "dedicated_admin_token": bool(settings.admin_token),
             "strict_mode": settings.strict_mode,
         },
+        # Une politique client peut affaiblir la detection : le DPO doit
+        # le voir, meme si le choix appartient au client.
+        "policy_degradations": policy.all_degradations(),
     }
     payload["signature"] = _sign(payload)
     return payload

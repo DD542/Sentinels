@@ -28,6 +28,7 @@ from . import metrics
 from . import logs
 from . import maintenance
 from . import revocation
+from . import policy
 
 settings = get_settings()
 
@@ -80,6 +81,7 @@ async def lifespan(app: FastAPI):
     await events.load_stats_from_db()
     await l3_semantic.load_corpus_from_db()
     await revocation.load_from_db()
+    await policy.load_from_db()
     # Une verification complete au demarrage : c'est le seul moment ou
     # relire tout le journal a du sens. Ensuite, l'incrementale suffit.
     await chain.verify_integrity_async()
@@ -267,6 +269,45 @@ async def trigger_purge(x_admin_token: str | None = Header(default=None)) -> dic
     }
 
 
+class PolicyRequest(BaseModel):
+    allowlist: list[str] = []
+    min_confidence: dict[str, float] = {}
+    actions: dict[str, str] = {}
+
+
+@app.get("/policy")
+async def read_policy(client_id: str = Depends(auth.verify_key)) -> dict:
+    """Politique de detection du client authentifie."""
+    politique = policy.get(client_id)
+    return {"client_id": client_id, **politique,
+            "degradations": policy.degradations(politique)}
+
+
+@app.put("/policy")
+async def write_policy(req: PolicyRequest,
+                       client_id: str = Depends(auth.verify_key)) -> dict:
+    """Remplace la politique du client : exceptions, seuils, actions.
+
+    Regler sa detection est legitime — un faux positif repete pousse les
+    employes a contourner l'outil, et une protection contournee ne
+    protege rien. Mais un reglage peut aussi affaiblir un controle de
+    securite : le changement est donc **scelle dans le journal d'audit**,
+    et les degradations sont signalees dans le rapport de conformite."""
+    try:
+        applique = await policy.set_policy(client_id, req.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    degradations = policy.degradations(applique)
+    entry = await chain.append_async(
+        "POLICY_UPDATE", "POLICY", f"policy:{client_id}",
+        {"client": client_id, "policy": applique,
+         "degradations": degradations})
+    return {"client_id": client_id, **applique,
+            "degradations": degradations,
+            "audit_hash": entry["hash"][:12]}
+
+
 @app.post("/corpus/ingest")
 async def ingest(req: IngestRequest,
                  client_id: str = Depends(auth.verify_key)) -> dict:
@@ -356,7 +397,7 @@ async def scan(req: ScanRequest,
     by_value = [f for f in result.findings if "obfuscation" in f.meta]
 
     for f in sorted(positional, key=lambda x: x.start, reverse=True):
-        action = engine.decide(f)
+        action = engine.decide(f, client_id)
         if action == Action.BLOCK:
             sanitized = sanitized[:f.start] + "[BLOCKED]" + sanitized[f.end:]
         elif action == Action.TOKENIZE:

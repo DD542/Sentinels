@@ -60,6 +60,15 @@ class DetectionEngine:
                 if f.entity_type != EntityType.LOCATION
             ]
 
+        # Politique du client : exceptions et seuils. Applique ici, donc
+        # valable pour TOUS les points d'entree (scan, chat, compatible
+        # OpenAI) sans avoir a y penser a chaque appel.
+        from .. import policy
+        result.findings, ecartes = policy.filter_findings(
+            result.findings, client_id)
+        for _, motif in ecartes:
+            metrics.POLICY_SUPPRESSED.labels(reason=motif).inc()
+
         metrics.SCAN_DURATION.observe(time.perf_counter() - t0)
         return result
 
@@ -128,7 +137,17 @@ class DetectionEngine:
 
     # --- Politique de décision ---
 
-    def decide(self, finding: Finding) -> Action:
+    def decide(self, finding: Finding,
+               client_id: str = "default") -> Action:
+        """Action par defaut, sauf si le client en a impose une autre.
+
+        La surcharge peut affaiblir la protection (laisser passer un
+        secret) : c'est son droit, mais le changement est scelle dans
+        l'audit et signale dans le rapport de conformite."""
+        from .. import policy
+        impose = policy.action_override(finding.entity_type, client_id)
+        if impose is not None:
+            return impose
         if finding.entity_type == EntityType.SECRET:
             return Action.BLOCK
         if finding.entity_type == EntityType.IP_LEAK:
