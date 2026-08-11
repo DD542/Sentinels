@@ -1,0 +1,136 @@
+name: SENTINEL — chaîne d'approvisionnement
+
+# Un outil de sécurité doit être exemplaire sur sa propre chaîne
+# d'approvisionnement : dépendances auditées, image scannée, inventaire
+# (SBOM) publié pour chaque version.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Les CVE apparaissent après la fusion : on rescanne chaque lundi.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  dependencies:
+    name: Audit des dépendances Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installer pip-audit
+        run: python -m pip install --upgrade pip pip-audit
+
+      - name: Auditer les dépendances déclarées
+        working-directory: backend
+        # `-e .` installe le projet et ses dépendances, que pip-audit
+        # inspecte ensuite dans l'environnement résolu.
+        run: |
+          pip install -e .
+          pip-audit --strict --desc
+
+  image:
+    name: Scan de l'image et SBOM
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # dépôt du rapport SARIF
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Construire l'image
+        run: docker build -t sentinel:ci ./backend
+
+      # NOTE : `@master` suit la branche de l'action. Pour un déploiement
+      # d'entreprise, épinglez un SHA de commit.
+      - name: Scanner l'image (rapport SARIF)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: sentinel:ci
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: true
+
+      - name: Publier le rapport dans l'onglet Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Échouer sur une vulnérabilité corrigeable HIGH ou CRITICAL
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: sentinel:ci
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+      - name: Générer le SBOM (CycloneDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: sentinel:ci
+          format: cyclonedx-json
+          output-file: sentinel-sbom.cdx.json
+          upload-artifact: false
+
+      - name: Publier le SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sentinel-sbom.cdx.json
+          retention-days: 90
+
+  helm:
+    name: Validation du chart Helm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      - name: helm lint
+        run: helm lint deploy/helm/sentinel
+
+      - name: Rendu avec les valeurs par défaut
+        run: helm template sentinel deploy/helm/sentinel > /tmp/rendu-defaut.yaml
+
+      - name: Rendu avec toutes les options activées
+        run: |
+          helm template sentinel deploy/helm/sentinel \
+            --set ingress.enabled=true \
+            --set autoscaling.enabled=true \
+            --set serviceMonitor.enabled=true \
+            --set networkPolicy.enabled=true \
+            --set secrets.create=true \
+            --set secrets.values.auditHmacKey=test \
+            > /tmp/rendu-complet.yaml
+
+      - name: Vérifier que le rendu est du Kubernetes valide
+        run: |
+          for f in /tmp/rendu-defaut.yaml /tmp/rendu-complet.yaml; do
+            echo "--- $f"
+            kubectl apply --dry-run=client -f "$f" >/dev/null && echo "OK"
+          done
+
+      - name: Vérifier les garde-fous de sécurité du chart
+        run: |
+          set -e
+          grep -q "runAsNonRoot: true" /tmp/rendu-defaut.yaml
+          grep -q "readOnlyRootFilesystem: true" /tmp/rendu-defaut.yaml
+          grep -q "allowPrivilegeEscalation: false" /tmp/rendu-defaut.yaml
+          grep -q "automountServiceAccountToken: false" /tmp/rendu-defaut.yaml
+          # Le mode strict (fail-closed) doit rester le défaut.
+          grep -q 'name: strict_mode' /tmp/rendu-defaut.yaml
+          grep -A1 'name: strict_mode' /tmp/rendu-defaut.yaml | grep -q '"true"'
+          echo "Garde-fous présents dans le rendu par défaut"

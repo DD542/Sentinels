@@ -1,0 +1,40 @@
+SENTINEL {{ .Chart.AppVersion }} est déployé ({{ .Release.Name }}).
+
+{{ if .Values.config.strictMode -}}
+Mode STRICT actif : le pod refuse de démarrer si la persistance est
+absente ou si les clés cryptographiques et les tokens ne sont pas
+définis. Si les pods redémarrent en boucle, lisez d'abord les logs :
+
+  kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }} --tail=20
+
+Chaque manque y est nommé explicitement.
+{{- else -}}
+ATTENTION : mode strict désactivé. SENTINEL peut démarrer sans
+persistance et tourner en mémoire — les journaux d'audit ne
+survivraient pas à un redémarrage. Réservé aux démonstrations.
+{{- end }}
+
+{{ if and (not .Values.secrets.existingSecret) .Values.secrets.create -}}
+Le Secret a été créé depuis values.yaml. En production, préférez
+`secrets.existingSecret` : un secret dans un values.yaml finit
+versionné dans Git.
+{{- else if not .Values.secrets.existingSecret -}}
+Aucun Secret n'est référencé ({{ "secrets.existingSecret" }} vide et
+{{ "secrets.create" }} à false). Créez-le avant que les pods démarrent :
+
+  kubectl create secret generic {{ include "sentinel.fullname" . }} \
+    --from-literal=vault_master_key=$(openssl rand -hex 32) \
+    --from-literal=audit_hmac_key=$(openssl rand -hex 32) \
+    --from-literal=admin_token=$(openssl rand -hex 24) \
+    --from-literal=dashboard_token=$(openssl rand -hex 24) \
+    --from-literal=database_url='postgresql://…'
+{{- end }}
+
+Accès local :
+
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "sentinel.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  curl http://localhost:{{ .Values.service.port }}/health
+
+Rapport de conformité (token dashboard requis) :
+
+  curl -H "X-Dashboard-Token: <token>" http://localhost:{{ .Values.service.port }}/compliance/report

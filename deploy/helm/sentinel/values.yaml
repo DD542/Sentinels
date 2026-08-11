@@ -1,0 +1,152 @@
+# Valeurs par défaut de SENTINEL.
+# Les défauts visent la PRODUCTION : mode strict actif, secrets externes,
+# conteneur non-root en système de fichiers en lecture seule.
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/dd542/sentinel
+  tag: ""                     # vide = appVersion du Chart
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+service:
+  type: ClusterIP
+  port: 8000
+
+# ---------------------------------------------------------------
+# Configuration applicative (non secrète)
+# ---------------------------------------------------------------
+config:
+  environment: production
+  logFormat: json
+  # Fail-closed : refuse de démarrer si la posture est incomplète
+  # (persistance absente, clés par défaut, tokens non définis).
+  strictMode: true
+  rateLimitPerMinute: 120
+  vaultTtlHours: 24
+  # 0 = conservation illimitée du journal. À décider avec votre DPO.
+  auditRetentionDays: 0
+  purgeIntervalMinutes: 60
+  streamNative: true
+  ollamaBaseUrl: ""           # juge local L4 (optionnel)
+
+# ---------------------------------------------------------------
+# Secrets
+#
+# En production, créez le Secret hors du chart (SOPS, Vault, External
+# Secrets Operator…) et référencez-le par `existingSecret`. Les valeurs
+# ci-dessous n'existent que pour les environnements de test : tout
+# secret écrit dans un values.yaml finit dans un dépôt Git.
+# ---------------------------------------------------------------
+secrets:
+  existingSecret: ""          # recommandé : nom d'un Secret déjà présent
+  create: false               # true = le chart crée le Secret depuis `values`
+  values:
+    databaseUrl: ""
+    vaultMasterKey: ""        # openssl rand -hex 32
+    auditHmacKey: ""          # openssl rand -hex 32
+    adminToken: ""
+    dashboardToken: ""
+    openaiApiKey: ""
+    anthropicApiKey: ""
+    groqApiKey: ""
+    mistralApiKey: ""
+
+# Clés attendues dans le Secret (à respecter si `existingSecret`).
+secretKeys:
+  databaseUrl: database_url
+  vaultMasterKey: vault_master_key
+  auditHmacKey: audit_hmac_key
+  adminToken: admin_token
+  dashboardToken: dashboard_token
+  openaiApiKey: openai_api_key
+  anthropicApiKey: anthropic_api_key
+  groqApiKey: groq_api_key
+  mistralApiKey: mistral_api_key
+
+# ---------------------------------------------------------------
+# Sécurité d'exécution
+# ---------------------------------------------------------------
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 1Gi            # spaCy fr_core_news_lg tient en mémoire
+  limits:
+    cpu: "2"
+    memory: 3Gi
+
+# Le modèle de langue est chargé au premier scan : on laisse au pod le
+# temps de démarrer avant de le déclarer en échec.
+startupProbe:
+  enabled: true
+  failureThreshold: 30
+  periodSeconds: 5
+livenessProbe:
+  initialDelaySeconds: 10
+  periodSeconds: 20
+readinessProbe:
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 75
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: sentinel.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Expose /metrics au Prometheus Operator (CRD ServiceMonitor requis).
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+
+# NetworkPolicy : par défaut, on n'autorise que le trafic entrant
+# explicitement décrit. Sortie ouverte (les fournisseurs d'IA sont sur
+# Internet), à restreindre selon votre politique.
+networkPolicy:
+  enabled: false
+  ingressFrom: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+extraEnv: []

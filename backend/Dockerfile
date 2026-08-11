@@ -1,19 +1,19 @@
 FROM python:3.12-slim
 
-# Dépendances système minimales (spaCy/Presidio ont besoin de gcc pour certaines wheels)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
-# Copie et installation des dépendances d'abord (cache Docker)
+# Copie et installation des dépendances d'abord (cache Docker).
+# Les compilateurs ne servent qu'à construire certaines wheels : ils sont
+# installés, utilisés, puis PURGÉS dans la même couche. Un compilateur
+# présent dans une image de production est à la fois une surface d'attaque
+# et la première chose que signale un scanner comme Trivy.
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -e ".[detection,embeddings]"
-
-# Modèle spaCy français (couche L2)
-RUN python -m spacy download fr_core_news_lg
+RUN apt-get update && apt-get install -y --no-install-recommends gcc g++ \
+    && pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -e ".[detection,embeddings]" \
+    && python -m spacy download fr_core_news_lg \
+    && apt-get purge -y --auto-remove gcc g++ \
+    && rm -rf /var/lib/apt/lists/* /root/.cache
 
 # Copie du code
 COPY app ./app

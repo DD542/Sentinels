@@ -37,6 +37,7 @@
 - [Démarrage rapide](#démarrage-rapide)
 - [Utilisation](#utilisation)
 - [Référence API](#référence-api)
+- [Déploiement en production](#déploiement-en-production)
 - [Tests et benchmark](#tests-et-benchmark)
 - [Limites connues](#limites-connues)
 - [Feuille de route](#feuille-de-route)
@@ -150,6 +151,7 @@ Le flux d'un prompt : dé-obfuscation → détection multi-couches → décision
 | Frontend | Vue 3, Vite, WebSocket natif, zéro dépendance graphique |
 | Fournisseurs IA | Anthropic, OpenAI, Groq |
 | Tests & CI | pytest, pytest-asyncio, pytest-cov, GitHub Actions |
+| Déploiement | Docker, Helm (Kubernetes), Trivy, SBOM CycloneDX, pip-audit |
 
 ### Démarrage rapide
 
@@ -265,6 +267,31 @@ Le fournisseur reçoit `Hugo Blanc` et un IBAN factice valide. L'employé reçoi
 
 ¹ *Si `DASHBOARD_TOKEN` est défini : header `X-Dashboard-Token` pour l'API, second sous-protocole WebSocket (`["sentinel.v1", token]`) pour le flux. Vide = accès libre (dev/démo).*
 
+### Déploiement en production
+
+Chart Helm fourni ([`deploy/helm/sentinel`](deploy/helm/sentinel)), avec
+des défauts orientés production : mode **fail-closed**, conteneur non-root
+en système de fichiers en lecture seule, capacités Linux supprimées, jeton
+de ServiceAccount non monté, sondes de démarrage adaptées au chargement du
+modèle de langue.
+
+```bash
+kubectl -n sentinel create secret generic sentinel   --from-literal=vault_master_key=$(openssl rand -hex 32)   --from-literal=audit_hmac_key=$(openssl rand -hex 32)   --from-literal=admin_token=$(openssl rand -hex 24)   --from-literal=dashboard_token=$(openssl rand -hex 24)   --from-literal=database_url='postgresql://…'
+
+helm install sentinel deploy/helm/sentinel -n sentinel   --set secrets.existingSecret=sentinel
+```
+
+**Chaîne d'approvisionnement.** Un outil de sécurité doit être exemplaire
+sur la sienne : `pip-audit` sur les dépendances, **Trivy** sur l'image
+(rapport SARIF dans l'onglet *Security*, échec sur toute vulnérabilité
+corrigeable HIGH/CRITICAL), **SBOM CycloneDX** publié en artefact, et
+`helm lint` + rendu validé par `kubectl --dry-run`. Le tout rejoué chaque
+lundi, car les CVE apparaissent après la fusion. Les garde-fous du chart
+sont eux-mêmes testés : désactiver le mode strict par défaut fait échouer
+la CI.
+
+Guide complet : [`docs/deploiement.md`](docs/deploiement.md).
+
 ### Tests et benchmark
 
 ```bash
@@ -331,6 +358,7 @@ Ces limites sont documentées **parce qu'elles existent dans toutes les solution
 - [x] Durées de conservation réellement appliquées (purge périodique) : jetons du vault supprimés, clés d'audit hors rétention détruites — **les entrées d'audit, elles, sont conservées pour que la chaîne reste vérifiable**
 - [x] **Index aveugle des personnes concernées** (HMAC) : droits RGPD d'accès et d'effacement visant un individu, sans jamais stocker son identité ; l'effacement n'atteint que la personne visée
 - [x] **Streaming natif du fournisseur** : les fragments sont relayés au fil de l'eau et désanonymisés incrémentalement — une fenêtre de retenue garantit qu'un jeton coupé entre deux fragments est quand même restauré
+- [x] **Chart Helm durci** (fail-closed, non-root, FS en lecture seule) + **Trivy, SBOM CycloneDX et `pip-audit` en CI** — garde-fous du chart vérifiés automatiquement
 
 ** À venir**
 
@@ -551,6 +579,7 @@ These limitations are documented **because they exist in every solution on the m
 - [x] Retention actually enforced (periodic purge): expired vault tokens deleted, out-of-retention audit keys destroyed — **audit entries themselves are kept so the chain stays verifiable**
 - [x] **Blind index of data subjects** (HMAC): GDPR access and erasure rights targeting an individual, without ever storing their identity; erasure affects only that person
 - [x] **Native provider streaming**: chunks are relayed as they arrive and detokenised incrementally — a hold-back window guarantees a token split across chunks is still restored
+- [x] **Hardened Helm chart** (fail-closed, non-root, read-only FS) + **Trivy, CycloneDX SBOM and `pip-audit` in CI** — the chart's guardrails are themselves tested
 
 ** Next**
 

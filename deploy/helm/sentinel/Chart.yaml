@@ -1,0 +1,20 @@
+apiVersion: v2
+name: sentinel
+description: >-
+  SENTINEL — passerelle de sécurité pour les interactions IA de l'entreprise :
+  inspection des prompts sortants, pseudonymisation à format préservé,
+  journal d'audit inviolable et conformité AI Act / RGPD.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - dlp
+  - ai-gateway
+  - gdpr
+  - ai-act
+  - security
+home: https://github.com/DD542/Sentinels
+sources:
+  - https://github.com/DD542/Sentinels
+maintainers:
+  - name: DD542
