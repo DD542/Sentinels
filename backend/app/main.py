@@ -269,6 +269,7 @@ class PolicyRequest(BaseModel):
     allowlist: list[str] = []
     min_confidence: dict[str, float] = {}
     actions: dict[str, str] = {}
+    deep_scan: bool = False
 
 
 @app.get("/audit/export")

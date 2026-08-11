@@ -31,6 +31,10 @@ EVASION_FLAGS = Counter(
     "sentinel_evasion_flags_total",
     "Tentatives d'ingenierie sociale contre la passerelle (drapeaux L0)")
 
+L4_FINDINGS = Counter(
+    "sentinel_l4_findings_total",
+    "Entites rattrapees par le juge local (manquees par L1-L3)")
+
 POLICY_SUPPRESSED = Counter(
     "sentinel_policy_suppressed_total",
     "Detections ecartees par la politique du client (faux positifs regles)",

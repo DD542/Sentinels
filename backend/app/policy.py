@@ -47,7 +47,8 @@ _TYPES_VALIDES = {t.value for t in EntityType}
 
 
 def empty_policy() -> dict:
-    return {"allowlist": [], "min_confidence": {}, "actions": {}}
+    return {"allowlist": [], "min_confidence": {}, "actions": {},
+            "deep_scan": False}
 
 
 def get(client_id: str = DEFAULT_CLIENT) -> dict:
@@ -92,10 +93,15 @@ def validate(policy: dict) -> dict:
                 f"Action inconnue pour {t} : {a} "
                 f"(attendu : {', '.join(sorted(_ACTIONS_VALIDES))})")
 
+    deep = policy.get("deep_scan", False)
+    if not isinstance(deep, bool):
+        raise ValueError("`deep_scan` doit etre un booleen")
+
     return {
         "allowlist": allowlist,
         "min_confidence": {t: float(v) for t, v in seuils.items()},
         "actions": dict(actions),
+        "deep_scan": deep,
     }
 
 
@@ -151,6 +157,15 @@ def filter_findings(findings: list, client_id: str = DEFAULT_CLIENT) -> tuple[li
             continue
         retenus.append(f)
     return retenus, ecartes
+
+
+def deep_scan_enabled(client_id: str = DEFAULT_CLIENT) -> bool:
+    """Le client a-t-il demande le rattrapage par juge local ?
+
+    Desactive par defaut : une inference coute mille fois le reste du
+    pipeline. C'est un choix de compromis rappel/latence, pas un
+    reglage a activer partout."""
+    return bool(get(client_id).get("deep_scan"))
 
 
 def action_override(entity_type: EntityType,

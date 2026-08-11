@@ -60,6 +60,15 @@ class DetectionEngine:
                 if f.entity_type != EntityType.LOCATION
             ]
 
+        # L4 — rattrapage par juge local, sur le TEXTE ORIGINAL et une
+        # seule fois. Le placer dans la boucle des vues multiplierait les
+        # inferences par le nombre de variantes de-obfusquees, pour un
+        # gain nul : le juge lit le sens, pas l'encodage.
+        if await self._doit_juger(result, client_id):
+            for f in await self._l4_judge(text):
+                if not self._overlaps_existing(f, result):
+                    result.add(f)
+
         # Politique du client : exceptions et seuils. Applique ici, donc
         # valable pour TOUS les points d'entree (scan, chat, compatible
         # OpenAI) sans avoir a y penser a chaque appel.
@@ -86,11 +95,6 @@ class DetectionEngine:
         for f in await self._l3_semantic(text, client_id):
             result.add(f)
 
-        if self._is_ambiguous(result):
-            for f in await self._l4_judge(text, result):
-                if not self._overlaps_existing(f, result):
-                    result.add(f)
-
         return result
 
     # --- Couches ---
@@ -115,15 +119,31 @@ class DetectionEngine:
         except Exception:
             return []
 
-    async def _l4_judge(self, text: str, partial: DetectionResult) -> list[Finding]:
+    async def _doit_juger(self, result: DetectionResult,
+                          client_id: str) -> bool:
+        """Deux raisons d'appeler le juge local :
+
+        1. le client a demande le rattrapage (`deep_scan`) — il accepte
+           la latence pour gagner du rappel sur le texte libre ;
+        2. la detection est *ambigue* : ni franchement vide, ni franchement
+           sure. C'est le cas historique, conserve."""
+        from .. import policy
+        if policy.deep_scan_enabled(client_id):
+            return True
+        return self._is_ambiguous(result)
+
+    async def _l4_judge(self, text: str) -> list[Finding]:
         try:
             from . import l4_judge
         except ImportError:
             return []
         try:
-            return await l4_judge.judge(text)
+            trouves = await l4_judge.judge(text)
         except Exception:
             return []
+        if trouves:
+            metrics.L4_FINDINGS.inc(len(trouves))
+        return trouves
 
     # --- Utilitaires ---
 

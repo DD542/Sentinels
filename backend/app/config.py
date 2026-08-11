@@ -89,6 +89,10 @@ class Settings(BaseSettings):
     # Juge local
     ollama_base_url: str = "http://localhost:11434"
     ollama_judge_model: str = "qwen2.5:14b"
+    # Une inference coute 5 a 25 s selon le modele et la longueur : bien
+    # au-dela des 13 ms du reste du pipeline. Au-dela de ce delai, on
+    # abandonne le rattrapage plutot que de faire attendre l'employe.
+    l4_timeout_seconds: float = 30.0
     # Fournisseurs IA amont
     anthropic_base: str = "https://api.anthropic.com"
     openai_base: str = "https://api.openai.com"
