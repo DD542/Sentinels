@@ -53,7 +53,7 @@ def _bind_gauges() -> None:
     """Les jauges lisent l'etat reel au moment du scrape (O(1))."""
     from .audit import chain
     from .vault import fpe
-    AUDIT_CHAIN_ENTRIES.set_function(lambda: len(chain._CHAIN))
+    AUDIT_CHAIN_ENTRIES.set_function(chain.count)
     VAULT_TOKENS.set_function(lambda: len(fpe._REVERSE_MAP))
 
 

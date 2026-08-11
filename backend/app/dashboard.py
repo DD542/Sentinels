@@ -46,7 +46,7 @@ async def require_dashboard_token(
 async def stats() -> dict:
     """Compteurs cumulés + événements récents pour le chargement initial."""
     snap = events.snapshot()
-    snap["audit_integrity"] = chain.verify_integrity()
+    snap["audit_integrity"] = chain.integrity_status()["verified"]
     return snap
 
 

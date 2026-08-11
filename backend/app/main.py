@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import secrets
+import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -59,6 +60,9 @@ async def lifespan(app: FastAPI):
     await events.load_stats_from_db()
     await l3_semantic.load_corpus_from_db()
     await revocation.load_from_db()
+    # Une verification complete au demarrage : c'est le seul moment ou
+    # relire tout le journal a du sens. Ensuite, l'incrementale suffit.
+    await chain.verify_integrity_async()
     if settings.strict_mode and not db.is_enabled():
         raise RuntimeError(
             "SENTINEL_STRICT : demarrage refuse — connexion Postgres impossible")
@@ -200,6 +204,31 @@ async def usage(x_admin_token: str | None = Header(default=None),
             "total_prompts": sum(c["prompts"] for c in by_client.values())}
 
 
+@app.get("/admin/audit/verify")
+async def verify_audit(x_admin_token: str | None = Header(default=None),
+                       full: bool = True) -> dict:
+    """Vérifie le journal à la demande.
+
+    `full=true` (défaut) relit toute la chaîne depuis la genèse : c'est
+    la seule vérification qui détecte une altération ancienne, et son
+    coût est proportionnel à l'historique. `full=false` ne contrôle que
+    les entrées ajoutées depuis le dernier point de contrôle."""
+    if not x_admin_token or not secrets.compare_digest(
+            x_admin_token, settings.effective_admin_token):
+        raise HTTPException(status_code=403, detail="Token admin invalide")
+    debut = time.perf_counter()
+    if full:
+        verifie = await chain.verify_integrity_async()
+        controle = {"verified": verifie, "checked": chain.count(),
+                    "scope": "complete"}
+    else:
+        controle = await chain.verify_incremental()
+    return {**controle,
+            "duration_ms": round((time.perf_counter() - debut) * 1000, 1),
+            "entries": chain.count(),
+            "head_hash": chain.head() if chain.count() else None}
+
+
 @app.post("/admin/maintenance/purge")
 async def trigger_purge(x_admin_token: str | None = Header(default=None)) -> dict:
     """Déclenche une passe de purge à la demande (la même tourne
@@ -298,7 +327,7 @@ async def scan(req: ScanRequest,
             "language": detected_language,
             "evasion_flag": evasion_flag,
             "audit_hash": entry["hash"][:12],
-            "audit_integrity": await chain.verify_integrity_async(),
+            "audit_integrity": chain.integrity_status()["verified"],
         }
 
     sanitized = req.text
@@ -359,5 +388,5 @@ async def scan(req: ScanRequest,
         "decisions": decisions,
         "language": detected_language,
         "evasion_flag": evasion_flag,
-        "audit_integrity": await chain.verify_integrity_async(),
+        "audit_integrity": chain.integrity_status()["verified"],
     }

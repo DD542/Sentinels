@@ -16,11 +16,11 @@ from app import auth
 def reset_state():
     """Nettoie le vault, la chaine d'audit et les cles entre chaque test."""
     fpe._REVERSE_MAP.clear()
-    chain._CHAIN.clear()
+    chain._reset()
     auth._KEYS.clear()
     yield
     fpe._REVERSE_MAP.clear()
-    chain._CHAIN.clear()
+    chain._reset()
     auth._KEYS.clear()
 
 

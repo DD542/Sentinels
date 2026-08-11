@@ -75,9 +75,11 @@ async def build_report() -> dict:
         },
         "shadow_ai_registry": providers,
         "audit_chain": {
-            "entries": len(chain._CHAIN),
+            # Le rapport de conformite justifie une verification
+            # COMPLETE : c'est precisement sa raison d'etre.
+            "entries": chain.count(),
             "integrity_verified": await chain.verify_integrity_async(),
-            "head_hash": chain._CHAIN[-1]["hash"] if chain._CHAIN else None,
+            "head_hash": chain.head() if chain.count() else None,
         },
         "security_posture": {
             "persistence_enabled": db.is_enabled(),
@@ -126,7 +128,7 @@ async def forget_entity(req: ForgetRequest) -> dict:
         "entries_shredded": affected,
         "method": "crypto-shredding (Fernet DEK détruite)",
         "audit_hash": entry["hash"][:12],
-        "chain_integrity": await chain.verify_integrity_async(),
+        "chain_integrity": chain.integrity_status()["verified"],
     }
 
 
@@ -175,7 +177,7 @@ async def forget_subject(req: SubjectRequest) -> dict:
         "entries_shredded": affected,
         "method": "crypto-shredding (cle de la personne detruite)",
         "audit_hash": entry["hash"][:12],
-        "chain_integrity": await chain.verify_integrity_async(),
+        "chain_integrity": chain.integrity_status()["verified"],
     }
 
 

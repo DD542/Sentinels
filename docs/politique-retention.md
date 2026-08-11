@@ -129,7 +129,8 @@ perd la donnée.**
 
 | Affirmation | Vérification |
 |:---|:---|
-| Le journal est inviolable | `GET /compliance/report` — champ « Vérification de la chaîne » ; toute altération casse le chaînage |
+| Le journal est inviolable | `GET /admin/audit/verify` — vérification **complète** depuis la genèse, à la demande ; toute altération casse le chaînage |
+| Le contrôle est réellement passé | `verified_at` et `scope` dans les réponses : l'état rapporté est daté, jamais recalculé à chaque requête (une vérification complète par requête coûterait 5 secondes à 100 000 entrées) |
 | Le rapport n'a pas été retouché | `GET /compliance/report.json` — signature HMAC recalculable avec votre clé d'audit |
 | La donnée effacée l'est vraiment | Après `/compliance/forget`, le détail est illisible et l'intégrité reste vraie (`backend/tests/test_audit_crypto.py`) |
 | Rien de sensible dans les logs | `backend/tests/test_logs.py` |

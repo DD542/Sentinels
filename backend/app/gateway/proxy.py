@@ -152,7 +152,7 @@ async def chat(req: ChatRequest,
                 return {"blocked": True,
                         "reason": "Contenu confidentiel de l'entreprise detecte",
                         "decisions": decisions,
-                        "audit_integrity": await chain.verify_integrity_async()}
+                        "audit_integrity": chain.integrity_status()["verified"]}
             all_decisions.extend(decisions)
             clean_messages.append({**msg, "content": sanitized})
         else:
@@ -175,5 +175,5 @@ async def chat(req: ChatRequest,
         "blocked": False,
         "answer": final_answer,
         "protections_applied": all_decisions,
-        "audit_integrity": await chain.verify_integrity_async(),
+        "audit_integrity": chain.integrity_status()["verified"],
     }

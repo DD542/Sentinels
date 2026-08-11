@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/DD542/sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/DD542/sentinel/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-265%20passed-brightgreen)](https://github.com/DD542/sentinel)
+[![Tests](https://img.shields.io/badge/tests-277%20passed-brightgreen)](https://github.com/DD542/sentinel)
 [![Benchmark](https://img.shields.io/badge/detection%20F1-100%25-brightgreen)](https://github.com/DD542/sentinel)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -71,7 +71,7 @@ Benchmark sur **89 prompts étiquetés** (`backend/tests/benchmark.py`) :
 | **Global** | **100 %** | **100 %** | **100 %** |
 
 **42 prompts innocents traités sans aucun faux positif.** Latence moyenne : ~100 ms/prompt.
-Suite de tests : **265 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
+Suite de tests : **277 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
 
 > Ces chiffres portent sur le jeu de test fourni, qui couvre les formats structurés, l'obfuscation (base64, hexadécimal, espacement) et les tentatives d'évasion. Ils ne constituent pas une garantie de détection exhaustive — voir [Limites connues](#limites-connues).
 
@@ -256,6 +256,7 @@ Le fournisseur reçoit `Hugo Blanc` et un IBAN factice valide. L'employé reçoi
 | `/admin/keys/revoke` | POST | token admin | Révoquer toutes les clés d'un client |
 | `/admin/usage` | GET | token admin | Consommation par client, persistée, ventilation journalière |
 | `/admin/maintenance/purge` | POST | token admin | Applique les durées de conservation à la demande |
+| `/admin/audit/verify` | GET | token admin | Vérifie le journal (complète ou incrémentale) |
 | `/compliance/subject` | POST | token admin | Droit d'accès RGPD : ce que le journal contient sur une personne |
 | `/compliance/forget-subject` | POST | token admin | Droit à l'effacement RGPD visant une personne |
 | `/corpus/ingest` | POST | clé SENTINEL | Indexer un document confidentiel |
@@ -369,6 +370,7 @@ Ces limites sont documentées **parce qu'elles existent dans toutes les solution
 - [x] **SSO d'entreprise OIDC** (PKCE, JWKS, restriction par domaine/groupe, session chiffrée) : connexions nominatives scellées dans l'audit
 - [x] **Révocation de session** (session, compte ou globale) : un cookie volé cesse d'être valable, la déconnexion tue réellement la session
 - [x] **Images signées** (cosign sans clé) avec **provenance SLSA** et **SBOM attesté** : un client peut vérifier l'origine avant de déployer
+- [x] **Vérification d'audit à coût constant** : l'état est rapporté en O(1) sur le chemin des requêtes, contrôle incrémental à chaque passe de maintenance, complet périodiquement et à la demande — mesuré, **5 064 ms → 1,2 µs** par requête à 100 000 entrées
 
 ** À venir**
 
@@ -409,7 +411,7 @@ Benchmark over **89 labelled prompts** (`backend/tests/benchmark.py`):
 | **Overall** | **100%** | **100%** | **100%** |
 
 **42 innocent prompts processed with zero false positives.** Average latency: ~100 ms/prompt.
-Test suite: **265 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
+Test suite: **277 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
 
 > These figures cover the provided test set (structured formats, base64/hex/spacing obfuscation, evasion attempts). They are not a guarantee of exhaustive detection — see [Known limitations](#known-limitations).
 
@@ -516,6 +518,7 @@ cd ../frontend && npm install && npm run dev    # dashboard
 | `/admin/keys/revoke` | POST | admin token | Revoke all keys of a client |
 | `/admin/usage` | GET | admin token | Per-client consumption, persisted, daily breakdown |
 | `/admin/maintenance/purge` | POST | admin token | Apply retention policies on demand |
+| `/admin/audit/verify` | GET | admin token | Verify the log (full or incremental) |
 | `/compliance/subject` | POST | admin token | GDPR access right: what the log holds about a person |
 | `/compliance/forget-subject` | POST | admin token | GDPR erasure targeting a person |
 | `/corpus/ingest` | POST | SENTINEL key | Index a confidential document |
@@ -597,6 +600,7 @@ These limitations are documented **because they exist in every solution on the m
 - [x] **Enterprise OIDC SSO** (PKCE, JWKS, domain/group restriction, encrypted session): named logins sealed in the audit chain
 - [x] **Session revocation** (session, account or global): a stolen cookie stops working, logout actually kills the session
 - [x] **Signed images** (keyless cosign) with **SLSA provenance** and **attested SBOM**: customers can verify provenance before deploying
+- [x] **Constant-cost audit verification**: O(1) status on the request path, incremental check each maintenance pass, full check periodically and on demand — measured **5,064 ms → 1.2 µs** per request at 100,000 entries
 
 ** Next**
 

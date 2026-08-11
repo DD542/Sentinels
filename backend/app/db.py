@@ -111,6 +111,17 @@ async def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_corpus_chunks_client
                     ON corpus_chunks (client_id);
 
+                -- Point de controle de verification : jusqu'ou la chaine
+                -- a deja ete verifiee. Permet de ne revalider que les
+                -- entrees ajoutees depuis, au lieu de tout relire a
+                -- chaque fois.
+                CREATE TABLE IF NOT EXISTS audit_checkpoint (
+                    id          INT PRIMARY KEY,
+                    seq         BIGINT NOT NULL,
+                    hash        TEXT NOT NULL,
+                    verified_at DOUBLE PRECISION NOT NULL
+                );
+
                 -- Registre de révocation des sessions du dashboard :
                 -- sans lui, un cookie volé resterait valable jusqu'à
                 -- son expiration.

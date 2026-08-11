@@ -21,6 +21,7 @@ demande via `POST /admin/maintenance/purge` (exploitation, démonstration).
 """
 from __future__ import annotations
 import asyncio
+import time
 
 from .config import get_settings
 from .audit import chain
@@ -34,6 +35,25 @@ _log = logs.get_logger("maintenance")
 _task: asyncio.Task | None = None
 
 
+_derniere_complete: float = 0.0
+
+
+async def _verifier_journal() -> dict:
+    """Incrémentale à chaque passe ; complète quand elle est due.
+
+    L'incrémentale ne relit que les entrées récentes — son coût suit le
+    trafic, pas l'historique. Mais elle ne verrait pas une altération
+    ANTÉRIEURE au point de contrôle : c'est pourquoi une vérification
+    complète repasse périodiquement sur tout le journal."""
+    global _derniere_complete
+    periode = settings.audit_full_verify_hours * 3600
+    if periode and (time.time() - _derniere_complete) >= periode:
+        ok = await chain.verify_integrity_async()
+        _derniere_complete = time.time()
+        return {"verified": ok, "checked": chain.count(), "scope": "complete"}
+    return await chain.verify_incremental()
+
+
 async def run_once() -> dict:
     """Une passe de maintenance. Sans base, tout est no-op."""
     vault_deleted = await fpe.purge_expired()
@@ -42,10 +62,16 @@ async def run_once() -> dict:
     # Une revocation ne sert plus a rien quand la session visee aurait
     # expire d'elle-meme : le registre reste borne.
     revocations = await revocation.purge_expired(settings.session_ttl_hours)
+    # Verification du journal : incrementale (cout proportionnel au
+    # trafic recent, pas a l'historique). C'est elle qui alimente l'etat
+    # rapporte en O(1) par les reponses d'API.
+    controle = await _verifier_journal()
     result = {"vault_tokens_deleted": vault_deleted,
               "audit_entities_shredded": audit_entities,
-              "revocations_purged": revocations}
-    if vault_deleted or audit_entities:
+              "revocations_purged": revocations,
+              "audit_entries_verified": controle["checked"],
+              "audit_verified": controle["verified"]}
+    if vault_deleted or audit_entities or controle["checked"]:
         _log.info("passe de maintenance", extra={"event": "purge", **result})
     return result
 

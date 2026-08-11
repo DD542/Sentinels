@@ -15,8 +15,77 @@ _log = logs.get_logger("audit")
 _HMAC_KEY = bytes.fromhex(settings.audit_hmac_key)
 _GENESIS = "0" * 64
 
-# Cache mémoire (toujours actif ; source de vérité si pas de DB).
+# Cache mémoire. Source de vérité SANS base ; simple fenêtre récente
+# avec base — on ne garde pas un million d'entrées en RAM.
 _CHAIN: list[dict] = []
+_CACHE_MAX = 5000
+
+# État O(1) du journal. Le chaînage n'a besoin que du hash de tête :
+# relire toute la chaîne pour connaître le précédent était le vrai coût.
+_HEAD: str = _GENESIS
+_COUNT: int = 0
+
+# Dernière vérification connue. C'est ce que les réponses d'API
+# rapportent : un état daté, pas une revérification à chaque requête.
+# Départ à True : une chaîne vide est trivialement intègre. Le champ
+# `at` reste nul tant qu'aucun contrôle réel n'a eu lieu — c'est lui qui
+# dit si l'affirmation a été vérifiée ou seulement héritée.
+_LAST_CHECK: dict = {"verified": True, "at": None,
+                     "entries": 0, "scope": "genese"}
+# Repli mémoire : nombre d'entrées déjà vérifiées (index dans _CHAIN).
+_VERIFIED_UPTO: int = 0
+
+
+def head() -> str:
+    """Hash de tête — O(1)."""
+    return _HEAD
+
+
+def count() -> int:
+    """Nombre total d'entrées scellées — O(1)."""
+    return _COUNT
+
+
+def integrity_status() -> dict:
+    """État d'intégrité **en O(1)**, sans relire le journal.
+
+    Revérifier la chaîne entière à chaque requête coûtait un balayage
+    complet : à 100 000 entrées, cinq secondes par appel. On rapporte
+    donc le résultat du dernier contrôle.
+
+    Sémantique exacte de `verified` : « aucune altération constatée ».
+    `verified_at` donne la date du dernier contrôle réel et `scope` sa
+    portée — un consommateur qui a besoin d'une certitude à l'instant t
+    demande une vérification complète (`/admin/audit/verify`)."""
+    return {
+        "verified": _LAST_CHECK["verified"],
+        "verified_at": _LAST_CHECK["at"],
+        "verified_entries": _LAST_CHECK["entries"],
+        "scope": _LAST_CHECK["scope"],
+        "entries": _COUNT,
+        "head_hash": _HEAD if _COUNT else None,
+    }
+
+
+def _remember(entry: dict) -> None:
+    """Ajoute au cache et met à jour l'état O(1). Avec persistance, le
+    cache est borné : la base reste la source de vérité."""
+    global _HEAD, _COUNT
+    _CHAIN.append(entry)
+    _HEAD = entry["hash"]
+    _COUNT += 1
+    if db.is_enabled() and len(_CHAIN) > _CACHE_MAX:
+        del _CHAIN[:len(_CHAIN) - _CACHE_MAX]
+
+
+def _reset() -> None:
+    """Remet le journal à zéro — utilisé par les tests."""
+    global _HEAD, _COUNT, _VERIFIED_UPTO
+    _CHAIN.clear()
+    _SHREDDED.clear()
+    _HEAD, _COUNT, _VERIFIED_UPTO = _GENESIS, 0, 0
+    _LAST_CHECK.update({"verified": True, "at": None,
+                        "entries": 0, "scope": "genese"})
 
 
 def _seal(payload: dict, prev_hash: str) -> str:
@@ -121,13 +190,12 @@ def _key_id(entry: dict) -> str:
 
 def append(action: str, entity_type: str, entity_id: str, detail: dict,
            subject: str | None = None) -> dict:
-    prev_hash = _CHAIN[-1]["hash"] if _CHAIN else _GENESIS
     ref = subjects.subject_ref(subject)
     dek = _get_or_create_key_mem(ref or entity_id)
     # dek None (entité oubliée) : on scelle un marqueur non déchiffrable.
     cipher = crypto.encrypt_detail(detail, dek) if dek else "SHREDDED"
-    entry = _build_entry(action, entity_type, entity_id, cipher, prev_hash, ref)
-    _CHAIN.append(entry)
+    entry = _build_entry(action, entity_type, entity_id, cipher, _HEAD, ref)
+    _remember(entry)
     return entry
 
 
@@ -169,19 +237,27 @@ def forget(entity_id: str) -> int:
 # ============================================================
 
 async def load_from_db() -> None:
-    """Recharge la chaîne + le keyring persistés au démarrage."""
+    """Recharge l'état du journal au démarrage : hash de tête, nombre
+    d'entrées, fenêtre récente et keyring."""
+    global _HEAD, _COUNT
     if not db.is_enabled():
         return
     try:
         async with db.pool().acquire() as con:
+            # On ne recharge QUE la fenêtre récente : charger un journal
+            # d'un million d'entrées en RAM à chaque démarrage n'a aucun
+            # sens, la base est la source de vérité.
             rows = await con.fetch(
                 "SELECT ts, action, entity_type, entity_id, cipher, prev_hash, "
-                "hash, subject_ref FROM audit_chain ORDER BY seq ASC"
-            )
+                "hash, subject_ref FROM audit_chain ORDER BY seq DESC LIMIT $1",
+                _CACHE_MAX)
+            total = await con.fetchrow("SELECT COUNT(*) AS n FROM audit_chain")
             keys = await con.fetch("SELECT entity_id, wrapped FROM audit_keys")
         _CHAIN.clear()
-        for r in rows:
+        for r in reversed(rows):
             _CHAIN.append(_row_to_entry(r))
+        _COUNT = int(total["n"]) if total else len(_CHAIN)
+        _HEAD = _CHAIN[-1]["hash"] if _CHAIN else _GENESIS
         crypto._KEYRING.clear()
         for k in keys:
             crypto._KEYRING[k["entity_id"]] = k["wrapped"]
@@ -197,7 +273,6 @@ async def append_async(action: str, entity_type: str, entity_id: str,
     Elle n'est jamais stockée : seule sa référence aveugle l'est, et elle
     sert de clé de chiffrement — l'oubli d'une personne ne touche donc
     qu'elle."""
-    prev_hash = _CHAIN[-1]["hash"] if _CHAIN else _GENESIS
     ref = subjects.subject_ref(subject)
     key_id = ref or entity_id
 
@@ -213,8 +288,8 @@ async def append_async(action: str, entity_type: str, entity_id: str,
         dek = _get_or_create_key_mem(key_id)
 
     cipher = crypto.encrypt_detail(detail, dek) if dek else "SHREDDED"
-    entry = _build_entry(action, entity_type, entity_id, cipher, prev_hash, ref)
-    _CHAIN.append(entry)
+    entry = _build_entry(action, entity_type, entity_id, cipher, _HEAD, ref)
+    _remember(entry)
 
     if db.is_enabled():
         try:
@@ -376,23 +451,131 @@ async def purge_expired_keys(retention_days: int) -> int:
     return len(rows)
 
 
+def _verify_entries(entries, prev_hash: str) -> tuple[bool, str]:
+    """Vérifie une suite d'entrées à partir d'un hash de départ.
+    Renvoie (intègre, dernier hash valide)."""
+    prev = prev_hash
+    for entry in entries:
+        expected = _seal({k: v for k, v in entry.items() if k != "hash"}, prev)
+        if entry["hash"] != expected or entry["prev_hash"] != prev:
+            return False, prev
+        prev = entry["hash"]
+    return True, prev
+
+
+def _record_check(verified: bool, entries: int, scope: str) -> None:
+    _LAST_CHECK.update({"verified": verified, "at": time.time(),
+                        "entries": entries, "scope": scope})
+    if not verified:
+        _log.error("CHAINE D'AUDIT COMPROMISE", extra={
+            "event": "audit_integrity_failure", "scope": scope})
+
+
+async def _load_checkpoint() -> tuple[int, str]:
+    """Dernier point vérifié : (seq, hash). (0, genèse) si aucun."""
+    if not db.is_enabled():
+        return 0, _GENESIS
+    try:
+        async with db.pool().acquire() as con:
+            row = await con.fetchrow(
+                "SELECT seq, hash FROM audit_checkpoint WHERE id = 1")
+        return (int(row["seq"]), row["hash"]) if row else (0, _GENESIS)
+    except Exception:
+        return 0, _GENESIS
+
+
+async def _save_checkpoint(seq: int, hash_: str) -> None:
+    if not db.is_enabled():
+        return
+    try:
+        async with db.pool().acquire() as con:
+            await con.execute(
+                "INSERT INTO audit_checkpoint (id, seq, hash, verified_at) "
+                "VALUES (1, $1, $2, $3) ON CONFLICT (id) DO UPDATE SET "
+                "seq = EXCLUDED.seq, hash = EXCLUDED.hash, "
+                "verified_at = EXCLUDED.verified_at", seq, hash_, time.time())
+    except Exception as e:
+        _log.warning("ecriture du point de controle echouee", extra={
+            "event": "db_error", "op": "save_checkpoint",
+            "error": f"{type(e).__name__}: {e}"})
+
+
+async def verify_incremental() -> dict:
+    """Vérifie **uniquement les entrées ajoutées** depuis le dernier point
+    de contrôle, puis avance ce point.
+
+    C'est ce qui rend la vérification tenable : le coût dépend du trafic
+    récent, pas de la taille de l'historique. Une chaîne étant
+    append-only, une entrée déjà vérifiée ne peut plus changer sans
+    casser le lien vers la suivante — mais **une altération antérieure au
+    point de contrôle ne serait pas vue ici** : c'est le rôle de la
+    vérification complète, exécutée périodiquement et à la demande."""
+    global _VERIFIED_UPTO
+
+    if not db.is_enabled():
+        nouvelles = _CHAIN[_VERIFIED_UPTO:]
+        depart = (_CHAIN[_VERIFIED_UPTO - 1]["hash"]
+                  if _VERIFIED_UPTO else _GENESIS)
+        ok, _ = _verify_entries(nouvelles, depart)
+        if ok:
+            _VERIFIED_UPTO = len(_CHAIN)
+        _record_check(ok, len(nouvelles), "incrementale")
+        return {"verified": ok, "checked": len(nouvelles),
+                "scope": "incrementale"}
+
+    seq, prev = await _load_checkpoint()
+    try:
+        async with db.pool().acquire() as con:
+            rows = await con.fetch(
+                "SELECT seq, ts, action, entity_type, entity_id, cipher, "
+                "prev_hash, hash, subject_ref FROM audit_chain "
+                "WHERE seq > $1 ORDER BY seq ASC", seq)
+    except Exception as e:
+        _log.warning("verification incrementale impossible", extra={
+            "event": "db_error", "op": "verify_incremental",
+            "error": f"{type(e).__name__}: {e}"})
+        return {"verified": None, "checked": 0, "scope": "incrementale"}
+
+    entrees = []
+    dernier_seq = seq
+    for r in rows:
+        e = _row_to_entry(r)
+        dernier_seq = int(e.pop("seq"))
+        entrees.append(e)
+
+    ok, dernier_hash = _verify_entries(entrees, prev)
+    if ok and entrees:
+        await _save_checkpoint(dernier_seq, dernier_hash)
+    _record_check(ok, len(entrees), "incrementale")
+    return {"verified": ok, "checked": len(entrees), "scope": "incrementale"}
+
+
 async def verify_integrity_async() -> bool:
-    """Vérifie la chaîne. En mode DB, relit la source de vérité."""
+    """Vérifie la chaîne **entière**, depuis la genèse. Coût proportionnel
+    à l'historique : à réserver aux vérifications d'audit (rapport de
+    conformité, endpoint dédié, passe périodique). Le chemin des
+    requêtes utilise `integrity_status()`, qui est en O(1)."""
     if db.is_enabled():
         try:
             async with db.pool().acquire() as con:
                 rows = await con.fetch(
-                    "SELECT ts, action, entity_type, entity_id, cipher, prev_hash, "
-                    "hash, subject_ref FROM audit_chain ORDER BY seq ASC"
+                    "SELECT seq, ts, action, entity_type, entity_id, cipher, "
+                    "prev_hash, hash, subject_ref FROM audit_chain "
+                    "ORDER BY seq ASC"
                 )
-            prev = _GENESIS
+            entrees, dernier_seq = [], 0
             for r in rows:
                 e = _row_to_entry(r)
-                expected = _seal({k: v for k, v in e.items() if k != "hash"}, prev)
-                if e["hash"] != expected or e["prev_hash"] != prev:
-                    return False
-                prev = e["hash"]
-            return True
+                dernier_seq = int(e.pop("seq"))
+                entrees.append(e)
+            ok, dernier_hash = _verify_entries(entrees, _GENESIS)
+            _record_check(ok, len(entrees), "complete")
+            if ok and entrees:
+                await _save_checkpoint(dernier_seq, dernier_hash)
+            return ok
         except Exception:
             pass  # repli sur le cache mémoire
-    return verify_integrity()
+
+    ok = verify_integrity()
+    _record_check(ok, len(_CHAIN), "complete")
+    return ok

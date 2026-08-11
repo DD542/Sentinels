@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     audit_retention_days: int = 0
     # Période entre deux passes de maintenance (purges). 0 = désactivé.
     purge_interval_minutes: int = 60
+    # Période entre deux vérifications COMPLÈTES du journal, en heures.
+    # L'incrémentale (à chaque passe) ne voit pas une altération
+    # ANTÉRIEURE au point de contrôle : seule la complète la détecte.
+    # 0 = jamais (uniquement au démarrage et à la demande).
+    audit_full_verify_hours: int = 24
     # Streaming : "natif" relaie les fragments du fournisseur au fil de
     # l'eau (latence minimale, désanonymisation incrémentale). False =
     # réponse complète puis découpage simulé — restauration maximale

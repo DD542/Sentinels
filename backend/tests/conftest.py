@@ -13,16 +13,14 @@ def reset_vault():
     from app.detection import l3_semantic
     revocation._reset()
     fpe._REVERSE_MAP.clear()
-    chain._CHAIN.clear()
-    chain._SHREDDED.clear()
+    chain._reset()
     crypto._KEYRING.clear()
     ratelimit._WINDOWS.clear()
     l3_semantic._SHINGLE_INDEX.clear()
     l3_semantic._DOC_CHUNKS.clear()
     yield
     fpe._REVERSE_MAP.clear()
-    chain._CHAIN.clear()
-    chain._SHREDDED.clear()
+    chain._reset()
     crypto._KEYRING.clear()
     ratelimit._WINDOWS.clear()
     l3_semantic._SHINGLE_INDEX.clear()
