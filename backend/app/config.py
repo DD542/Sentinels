@@ -38,7 +38,25 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 120
     # Token du dashboard (API stats + WebSocket temps réel).
     # Vide = accès libre (dev/démo) ; défini = obligatoire.
+    # Reste utilisable en accès de secours quand le SSO est actif.
     dashboard_token: str = ""
+
+    # --- SSO d'entreprise (OpenID Connect) ---
+    # Actif dès qu'un émetteur et un identifiant client sont fournis.
+    oidc_issuer: str = ""            # ex. https://login.microsoftonline.com/<tenant>/v2.0
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    # URL de retour déclarée chez le fournisseur d'identité.
+    oidc_redirect_uri: str = "http://localhost:8000/auth/callback"
+    oidc_scopes: str = "openid email profile"
+    # Restriction d'accès : domaine de messagerie et/ou groupes.
+    # Sans restriction, tout compte connu du fournisseur entrerait.
+    oidc_allowed_domains: str = ""   # ex. "monentreprise.fr,filiale.fr"
+    oidc_allowed_groups: str = ""    # ex. "rssi,dpo" (revendication `groups`)
+    # Durée d'une session dashboard, en heures.
+    session_ttl_hours: int = 8
+    # Cookie `Secure` : à laisser vrai partout sauf en HTTP local.
+    session_cookie_secure: bool = True
     # Format des logs : "json" (production, une ligne JSON par événement)
     # ou "text" (lisible, dev local).
     log_format: str = "json"
@@ -76,6 +94,10 @@ class Settings(BaseSettings):
     @property
     def effective_admin_token(self) -> str:
         return self.admin_token or self.audit_hmac_key
+
+    @property
+    def sso_enabled(self) -> bool:
+        return bool(self.oidc_issuer and self.oidc_client_id)
 @lru_cache
 def get_settings() -> Settings:
     return Settings()

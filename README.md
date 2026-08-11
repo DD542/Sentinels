@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/DD542/sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/DD542/sentinel/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-222%20passed-brightgreen)](https://github.com/DD542/sentinel)
+[![Tests](https://img.shields.io/badge/tests-249%20passed-brightgreen)](https://github.com/DD542/sentinel)
 [![Benchmark](https://img.shields.io/badge/detection%20F1-100%25-brightgreen)](https://github.com/DD542/sentinel)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -71,7 +71,7 @@ Benchmark sur **89 prompts étiquetés** (`backend/tests/benchmark.py`) :
 | **Global** | **100 %** | **100 %** | **100 %** |
 
 **42 prompts innocents traités sans aucun faux positif.** Latence moyenne : ~100 ms/prompt.
-Suite de tests : **222 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
+Suite de tests : **249 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
 
 > Ces chiffres portent sur le jeu de test fourni, qui couvre les formats structurés, l'obfuscation (base64, hexadécimal, espacement) et les tentatives d'évasion. Ils ne constituent pas une garantie de détection exhaustive — voir [Limites connues](#limites-connues).
 
@@ -110,6 +110,8 @@ python tests/benchmark_external.py --rows 1000 --json
 **Journal d'audit inviolable.** Chaque décision est scellée par HMAC-SHA256 chaîné à l'entrée précédente. Toute altération casse la chaîne et est détectée. Les données sensibles du journal sont chiffrées par clé dérivée par entité — effacer une entité (RGPD, droit à l'oubli) revient à **détruire sa clé** : *crypto-shredding*.
 
 **Registre Shadow AI.** Chaque appel sortant est tracé : quel fournisseur, quelle région, conforme UE ou non. Un argument de souveraineté directement exploitable en audit.
+
+** SSO d'entreprise (OpenID Connect).** Le dashboard s'authentifie contre votre fournisseur d'identité (Entra ID, Okta, Keycloak, Google Workspace) : chaque connexion est **nominative et scellée dans le journal d'audit**, soumise à votre MFA, et l'accès disparaît avec le compte. Un token partagé reste accepté en accès de secours. Détails et choix OIDC vs SAML : [`docs/sso.md`](docs/sso.md).
 
 ** Authentification multi-clients.** Chaque entreprise reçoit une clé API SENTINEL. Les clés sont stockées **hachées** (jamais en clair), révocables individuellement.
 
@@ -152,6 +154,7 @@ Le flux d'un prompt : dé-obfuscation → détection multi-couches → décision
 | Fournisseurs IA | Anthropic, OpenAI, Groq |
 | Tests & CI | pytest, pytest-asyncio, pytest-cov, GitHub Actions |
 | Déploiement | Docker, Helm (Kubernetes), Trivy, SBOM CycloneDX, pip-audit |
+| Authentification | OpenID Connect (PyJWT + JWKS), sessions chiffrées Fernet |
 
 ### Démarrage rapide
 
@@ -262,7 +265,10 @@ Le fournisseur reçoit `Hugo Blanc` et un IBAN factice valide. L'employé reçoi
 | `/gateway/chat` | POST | clé SENTINEL | Pipeline complet vers un fournisseur IA |
 | `/compliance/report` | GET | token dashboard¹ | Rapport de conformité signé (HTML, imprimable PDF) |
 | `/compliance/report.json` | GET | token dashboard¹ | Rapport canonique signé HMAC (vérifiable) |
-| `/dashboard/stats` | GET | token dashboard¹ | Compteurs et événements récents |
+| `/auth/login` | GET | — | Démarre la connexion SSO (OIDC + PKCE) |
+| `/auth/callback` | GET | — | Retour du fournisseur d'identité |
+| `/auth/logout` | POST | — | Ferme la session |
+| `/dashboard/stats` | GET | session SSO ou token¹ | Compteurs et événements récents |
 | `/dashboard/ws` | WS | token dashboard¹ | Flux temps réel |
 
 ¹ *Si `DASHBOARD_TOKEN` est défini : header `X-Dashboard-Token` pour l'API, second sous-protocole WebSocket (`["sentinel.v1", token]`) pour le flux. Vide = accès libre (dev/démo).*
@@ -359,6 +365,7 @@ Ces limites sont documentées **parce qu'elles existent dans toutes les solution
 - [x] **Index aveugle des personnes concernées** (HMAC) : droits RGPD d'accès et d'effacement visant un individu, sans jamais stocker son identité ; l'effacement n'atteint que la personne visée
 - [x] **Streaming natif du fournisseur** : les fragments sont relayés au fil de l'eau et désanonymisés incrémentalement — une fenêtre de retenue garantit qu'un jeton coupé entre deux fragments est quand même restauré
 - [x] **Chart Helm durci** (fail-closed, non-root, FS en lecture seule) + **Trivy, SBOM CycloneDX et `pip-audit` en CI** — garde-fous du chart vérifiés automatiquement
+- [x] **SSO d'entreprise OIDC** (PKCE, JWKS, restriction par domaine/groupe, session chiffrée) : connexions nominatives scellées dans l'audit
 
 ** À venir**
 
@@ -399,7 +406,7 @@ Benchmark over **89 labelled prompts** (`backend/tests/benchmark.py`):
 | **Overall** | **100%** | **100%** | **100%** |
 
 **42 innocent prompts processed with zero false positives.** Average latency: ~100 ms/prompt.
-Test suite: **222 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
+Test suite: **249 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
 
 > These figures cover the provided test set (structured formats, base64/hex/spacing obfuscation, evasion attempts). They are not a guarantee of exhaustive detection — see [Known limitations](#known-limitations).
 
@@ -515,7 +522,10 @@ cd ../frontend && npm install && npm run dev    # dashboard
 | `/gateway/chat` | POST | SENTINEL key | Full pipeline to an AI provider |
 | `/compliance/report` | GET | dashboard token¹ | Signed compliance report (HTML, print-to-PDF) |
 | `/compliance/report.json` | GET | dashboard token¹ | Canonical HMAC-signed report (verifiable) |
-| `/dashboard/stats` | GET | dashboard token¹ | Counters and recent events |
+| `/auth/login` | GET | — | Start SSO login (OIDC + PKCE) |
+| `/auth/callback` | GET | — | Identity provider callback |
+| `/auth/logout` | POST | — | End the session |
+| `/dashboard/stats` | GET | SSO session or token¹ | Counters and recent events |
 | `/dashboard/ws` | WS | dashboard token¹ | Real-time stream |
 
 ¹ *When `DASHBOARD_TOKEN` is set: `X-Dashboard-Token` header for the API, second WebSocket subprotocol (`["sentinel.v1", token]`) for the stream. Empty = open access (dev/demo).*
@@ -580,6 +590,7 @@ These limitations are documented **because they exist in every solution on the m
 - [x] **Blind index of data subjects** (HMAC): GDPR access and erasure rights targeting an individual, without ever storing their identity; erasure affects only that person
 - [x] **Native provider streaming**: chunks are relayed as they arrive and detokenised incrementally — a hold-back window guarantees a token split across chunks is still restored
 - [x] **Hardened Helm chart** (fail-closed, non-root, read-only FS) + **Trivy, CycloneDX SBOM and `pip-audit` in CI** — the chart's guardrails are themselves tested
+- [x] **Enterprise OIDC SSO** (PKCE, JWKS, domain/group restriction, encrypted session): named logins sealed in the audit chain
 
 ** Next**
 

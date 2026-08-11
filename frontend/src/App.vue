@@ -3,7 +3,8 @@ import { computed, ref } from "vue";
 import { useSentinel } from "./composables/useSentinel";
 import { API_BASE } from "./config";
 
-const { connected, authRequired, auditIntegrity, stats, feed, scans, setToken } = useSentinel();
+const { connected, authRequired, ssoEnabled, loginUrl, auditIntegrity,
+        stats, feed, scans, setToken, logout } = useSentinel();
 
 const tokenInput = ref("");
 function submitToken() {
@@ -263,7 +264,13 @@ function ts(t) {
   <div v-if="authRequired" class="auth-overlay">
     <div class="auth-card">
       <h1>SENTINEL</h1>
-      <p>Ce dashboard est protégé. Saisissez le token d'accès<br />(<code>DASHBOARD_TOKEN</code> du serveur).</p>
+      <template v-if="ssoEnabled">
+        <p>Ce dashboard est protégé. Connectez-vous avec votre compte
+          d'entreprise — chaque accès est nominatif et tracé.</p>
+        <a class="sso-btn" :href="loginUrl">Se connecter avec le SSO</a>
+        <p class="sso-alt">ou utilisez le token d'accès de secours</p>
+      </template>
+      <p v-else>Ce dashboard est protégé. Saisissez le token d'accès<br />(<code>DASHBOARD_TOKEN</code> du serveur).</p>
       <form @submit.prevent="submitToken">
         <input
           v-model="tokenInput"
@@ -291,6 +298,7 @@ function ts(t) {
           <span class="dot" :class="connected ? 'live' : 'down'"></span>
           {{ connected ? "Flux connecté" : "Reconnexion..." }}
         </span>
+        <button v-if="ssoEnabled" class="logout" @click="logout">Se déconnecter</button>
       </div>
     </div>
     <div v-if="reportError" class="inline-error">{{ reportError }}</div>
@@ -631,6 +639,31 @@ function ts(t) {
   cursor: pointer;
 }
 .auth-card button:hover { background: #dd820c; }
+.sso-btn {
+  display: inline-block;
+  padding: 11px 22px;
+  border-radius: 8px;
+  background: #f59a23;
+  color: #fff;
+  font-weight: 600;
+  text-decoration: none;
+}
+.sso-btn:hover { background: #dd820c; }
+.sso-alt {
+  margin: 18px 0 10px;
+  font-size: 13px;
+  color: #a1a1aa;
+}
+.logout {
+  margin-left: 12px;
+  padding: 4px 10px;
+  border: 1px solid #d4d4d8;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 12px;
+  cursor: pointer;
+}
+.logout:hover { background: #f4f4f5; }
 
 /* ---------- En-tête : boutons-liens ---------- */
 .link-btn {

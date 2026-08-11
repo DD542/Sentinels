@@ -1,7 +1,7 @@
 from __future__ import annotations
 import secrets
-from fastapi import (APIRouter, Depends, Header, HTTPException, WebSocket,
-                     WebSocketDisconnect)
+from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
+                     WebSocket, WebSocketDisconnect)
 
 from . import events
 from .audit import chain
@@ -26,11 +26,20 @@ def _token_ok(candidate: str | None) -> bool:
 
 
 async def require_dashboard_token(
+        request: Request,
         x_dashboard_token: str | None = Header(default=None)) -> None:
+    """Deux voies d'accès : la session SSO (nominative, révocable avec le
+    compte) et le token partagé (accès de secours, automatisation)."""
+    from . import sso
+    if sso.read_session(request.cookies.get(sso.SESSION_COOKIE)):
+        return
     if not _token_ok(x_dashboard_token):
-        raise HTTPException(status_code=401,
-                            detail="Token dashboard invalide ou manquant "
-                                   "(header X-Dashboard-Token)")
+        raise HTTPException(
+            status_code=401,
+            detail=("Authentification requise : connectez-vous "
+                    "(/auth/login) ou fournissez le header X-Dashboard-Token")
+            if settings.sso_enabled else
+            "Token dashboard invalide ou manquant (header X-Dashboard-Token)")
 
 
 @router.get("/dashboard/stats", dependencies=[Depends(require_dashboard_token)])
@@ -54,6 +63,10 @@ async def ws(websocket: WebSocket) -> None:
     sous-protocole ; sinon la connexion est refusée avant tout envoi."""
     offered = websocket.scope.get("subprotocols") or []
     candidate = offered[1] if len(offered) > 1 else None
+    # Le navigateur envoie les cookies sur la poignée de main WebSocket :
+    # une session SSO ouverte suffit, sans exposer de secret dans l'URL.
+    from . import sso
+    session = sso.read_session(websocket.cookies.get(sso.SESSION_COOKIE))
 
     # Si le client a proposé un sous-protocole, il faut le confirmer,
     # sinon le navigateur ferme la connexion.
@@ -63,7 +76,7 @@ async def ws(websocket: WebSocket) -> None:
     # Refus APRES accept : un refus de handshake arriverait au navigateur
     # en code 1006 generique ; ici le client recoit un 1008 explicite
     # (policy violation) et peut afficher l'ecran de saisie du token.
-    if not _token_ok(candidate):
+    if not session and not _token_ok(candidate):
         await websocket.close(code=1008)
         return
     queue = events.subscribe()

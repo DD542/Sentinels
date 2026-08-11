@@ -6,6 +6,8 @@ const TOKEN_KEY = "sentinel_dashboard_token";
 export function useSentinel() {
   const connected = ref(false);
   const authRequired = ref(false);
+  const ssoEnabled = ref(false);
+  const loginUrl = ref(`${API_BASE}/auth/login`);
   const auditIntegrity = ref(true);
   const stats = reactive({
     prompts_scanned: 0,
@@ -88,6 +90,7 @@ export function useSentinel() {
       const token = getToken();
       const r = await fetch(`${API_BASE}/dashboard/stats`, {
         headers: token ? { "X-Dashboard-Token": token } : {},
+        credentials: "include", // porte la session SSO
       });
       if (r.status === 401) { authRequired.value = true; return; }
       const data = await r.json();
@@ -105,11 +108,31 @@ export function useSentinel() {
     connect();
   }
 
-  onMounted(() => { loadInitial(); connect(); });
+  async function loadAuthConfig() {
+    try {
+      const r = await fetch(`${API_BASE}/auth/config`, { credentials: "include" });
+      const cfg = await r.json();
+      ssoEnabled.value = !!cfg.sso_enabled;
+      if (cfg.login_url) loginUrl.value = `${API_BASE}${cfg.login_url}`;
+    } catch (_) { /* backend pas prêt */ }
+  }
+
+  async function logout() {
+    try {
+      await fetch(`${API_BASE}/auth/logout`, {
+        method: "POST", credentials: "include",
+      });
+    } catch (_) { /* ignore */ }
+    localStorage.removeItem(TOKEN_KEY);
+    authRequired.value = true;
+  }
+
+  onMounted(() => { loadAuthConfig(); loadInitial(); connect(); });
   onUnmounted(() => {
     if (ws) ws.close();
     if (reconnectTimer) clearTimeout(reconnectTimer);
   });
 
-  return { connected, authRequired, auditIntegrity, stats, feed, scans, setToken };
+  return { connected, authRequired, ssoEnabled, loginUrl, auditIntegrity,
+           stats, feed, scans, setToken, logout };
 }
