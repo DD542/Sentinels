@@ -4,6 +4,7 @@ import { useSentinel } from "./composables/useSentinel";
 import { API_BASE } from "./config";
 
 const { connected, authRequired, ssoEnabled, loginUrl, auditIntegrity,
+        role, identity, can, loadIdentity,
         stats, feed, scans, setToken, logout } = useSentinel();
 
 const tokenInput = ref("");
@@ -13,7 +14,7 @@ function submitToken() {
 }
 
 /* ---------- Navigation : onglets + plage temporelle ---------- */
-const activeTab = ref("realtime"); // realtime | compliance | corpus
+const activeTab = ref("realtime"); // realtime | compliance | corpus | admin
 
 const RANGES = { "24h": 86400, "7d": 604800, "30d": 2592000, session: null };
 const range = ref("session");
@@ -187,6 +188,104 @@ function goCorpus() {
   loadCorpusStats();
 }
 
+/* ---------- Console d'administration ---------- */
+const adminToken = ref("");          // repli quand on n'est pas en SSO
+const adminBusy = ref("");
+const adminError = ref("");
+
+// Le jeton n'est envoye que s'il est saisi : avec une session SSO ayant
+// la permission, le serveur n'en a pas besoin.
+function adminBody(extra) {
+  const corps = { ...extra };
+  if (adminToken.value.trim()) corps.admin_token = adminToken.value.trim();
+  else corps.admin_token = "";
+  return corps;
+}
+// Sans SSO, l'exploitant presente son jeton : on redemande alors ses
+// droits au serveur, qui reste seul juge.
+async function applyAdminToken() {
+  await loadIdentity(adminToken.value.trim() || undefined);
+}
+
+function adminHeaders() {
+  const h = { "Content-Type": "application/json" };
+  if (adminToken.value.trim()) h["X-Admin-Token"] = adminToken.value.trim();
+  return h;
+}
+
+async function adminCall(nom, chemin, options = {}) {
+  adminBusy.value = nom;
+  adminError.value = "";
+  try {
+    const r = await fetch(`${API_BASE}${chemin}`, {
+      credentials: "include",
+      headers: adminHeaders(),
+      ...options,
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      adminError.value = data.detail || `Echec (HTTP ${r.status})`;
+      return null;
+    }
+    return data;
+  } catch (_) {
+    adminError.value = "Backend injoignable.";
+    return null;
+  } finally {
+    adminBusy.value = "";
+  }
+}
+
+// --- Cles clients
+const newClientId = ref("");
+const createdKey = ref(null);
+async function createKey() {
+  if (!newClientId.value.trim()) return;
+  createdKey.value = null;
+  const data = await adminCall("key", "/admin/keys", {
+    method: "POST",
+    body: JSON.stringify(adminBody({ client_id: newClientId.value.trim() })),
+  });
+  if (data) createdKey.value = data;
+}
+async function revokeClient() {
+  if (!newClientId.value.trim()) return;
+  const data = await adminCall("revoke", "/admin/keys/revoke", {
+    method: "POST",
+    body: JSON.stringify(adminBody({ client_id: newClientId.value.trim() })),
+  });
+  if (data) createdKey.value = { revoked: data.keys_revoked, ...data };
+}
+
+// --- Consommation (facturation)
+const usage = ref(null);
+async function loadUsage() {
+  const data = await adminCall("usage", "/admin/usage?days=30");
+  if (data) usage.value = data;
+}
+const usageRows = computed(() => {
+  if (!usage.value) return [];
+  return Object.entries(usage.value.clients || {})
+    .map(([client_id, v]) => ({ client_id, ...v }))
+    .sort((a, b) => b.prompts - a.prompts);
+});
+
+// --- Journal d'audit
+const auditResult = ref(null);
+async function verifyAudit(full) {
+  const data = await adminCall("audit",
+    `/admin/audit/verify?full=${full ? "true" : "false"}`);
+  if (data) auditResult.value = data;
+}
+
+// --- Maintenance
+const purgeResult = ref(null);
+async function runPurge() {
+  const data = await adminCall("purge", "/admin/maintenance/purge",
+                               { method: "POST" });
+  if (data) purgeResult.value = data;
+}
+
 const DONUT_COLORS = ["#f59a23", "#ffbe45", "#ffd98a", "#dd820c", "#b96a05", "#8f5304"];
 
 const PROVIDER_INFO = {
@@ -298,6 +397,7 @@ function ts(t) {
           <span class="dot" :class="connected ? 'live' : 'down'"></span>
           {{ connected ? "Flux connecté" : "Reconnexion..." }}
         </span>
+        <span v-if="role" class="role-badge" :title="identity || ''">{{ role }}</span>
         <button v-if="ssoEnabled" class="logout" @click="logout">Se déconnecter</button>
       </div>
     </div>
@@ -308,6 +408,8 @@ function ts(t) {
         <button class="pill" :class="{ active: activeTab === 'realtime' }" @click="activeTab = 'realtime'">Temps réel</button>
         <button class="pill" :class="{ active: activeTab === 'compliance' }" @click="activeTab = 'compliance'">Conformité</button>
         <button class="pill" :class="{ active: activeTab === 'corpus' }" @click="goCorpus">Corpus</button>
+        <button class="pill" :class="{ active: activeTab === 'admin' }"
+                @click="activeTab = 'admin'">Administration</button>
       </div>
       <div v-if="activeTab === 'realtime'" class="ranges">
         <button
@@ -560,6 +662,139 @@ function ts(t) {
     </template>
 
     <!-- ============ ONGLET CORPUS ============ -->
+    <template v-else-if="activeTab === 'admin'">
+      <div class="panel">
+        <h2>Administration</h2>
+        <p class="panel-text">
+          Vous êtes connecté avec le rôle <strong>{{ role }}</strong>.
+          Les écrans que vous ne voyez pas ne vous sont pas autorisés —
+          le serveur applique la même règle, quoi qu'affiche cette page.
+          Sans session SSO, renseignez le jeton d'administration.
+        </p>
+        <template v-if="!can('keys:manage') && !can('usage:read')
+                         && !can('audit:verify')">
+          <p class="panel-text">
+            Ce rôle ne donne accès à aucune opération d'administration.
+            Connectez-vous en SSO avec un compte administrateur, ou
+            présentez le jeton d'administration ci-dessous.
+          </p>
+          <div class="btn-row">
+            <input v-model="adminToken" type="password" class="field"
+                   placeholder="Token admin" />
+            <button class="primary" @click="applyAdminToken">Valider</button>
+          </div>
+        </template>
+        <div v-if="adminError" class="playground-error">{{ adminError }}</div>
+      </div>
+
+      <div class="grid-mid">
+        <div v-if="can('keys:manage')" class="panel">
+          <h2>Clés clients</h2>
+          <p class="panel-text">
+            Une clé par organisation. Elle n'est affichée qu'une fois :
+            elle est stockée hachée, jamais en clair. La révocation coupe
+            toutes les clés du client et est scellée dans l'audit.
+          </p>
+          <input v-model="newClientId" class="field"
+                 placeholder="client_id (ex. groupe-els)" />
+          <div class="btn-row">
+            <button class="primary" @click="createKey"
+                    :disabled="adminBusy === 'key'">
+              {{ adminBusy === 'key' ? "Création…" : "Créer une clé" }}
+            </button>
+            <button class="danger" @click="revokeClient"
+                    :disabled="adminBusy === 'revoke'">
+              {{ adminBusy === 'revoke' ? "Révocation…" : "Révoquer le client" }}
+            </button>
+          </div>
+          <div v-if="createdKey" class="playground-output">
+            <template v-if="createdKey.api_key">
+              <strong>{{ createdKey.client_id }}</strong> —
+              conservez cette clé, elle ne sera plus affichée :
+              <div class="mono key-value">{{ createdKey.api_key }}</div>
+            </template>
+            <template v-else>
+              {{ createdKey.keys_revoked }} clé(s) révoquée(s)
+              <span class="mono">({{ createdKey.audit_hash }})</span>
+            </template>
+          </div>
+        </div>
+
+        <div v-if="can('usage:read')" class="panel">
+          <h2>Consommation (30 jours)</h2>
+          <p class="panel-text">
+            Compteurs persistés par client : la base de facturation à
+            l'usage. Ils survivent aux redémarrages.
+          </p>
+          <button class="primary" @click="loadUsage"
+                  :disabled="adminBusy === 'usage'">
+            {{ adminBusy === 'usage' ? "Chargement…" : "Charger" }}
+          </button>
+          <table v-if="usageRows.length">
+            <thead>
+              <tr><th>Client</th><th>Prompts</th><th>Anonymisés</th>
+                  <th>Bloqués</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in usageRows" :key="c.client_id">
+                <td>{{ c.client_id }}</td>
+                <td class="num">{{ c.prompts }}</td>
+                <td class="num">{{ c.tokenized }}</td>
+                <td class="num">{{ c.blocked }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else-if="usage" class="empty">Aucune consommation enregistrée.</div>
+        </div>
+      </div>
+
+      <div class="grid-mid">
+        <div v-if="can('audit:verify')" class="panel">
+          <h2>Vérification du journal</h2>
+          <p class="panel-text">
+            La vérification <strong>complète</strong> relit toute la chaîne
+            depuis la genèse : elle seule détecte une altération ancienne.
+            L'incrémentale ne contrôle que les entrées ajoutées depuis le
+            dernier point de contrôle — instantanée, mais aveugle au passé.
+          </p>
+          <div class="btn-row">
+            <button class="primary" @click="verifyAudit(true)"
+                    :disabled="adminBusy === 'audit'">Complète</button>
+            <button class="pill" @click="verifyAudit(false)"
+                    :disabled="adminBusy === 'audit'">Incrémentale</button>
+          </div>
+          <div v-if="auditResult" class="playground-output">
+            <span :class="auditResult.verified ? 'ok' : 'ko'">
+              {{ auditResult.verified ? "INTÈGRE" : "COMPROMISE" }}
+            </span>
+            · {{ auditResult.checked }} entrée(s) vérifiée(s)
+            sur {{ auditResult.entries }}
+            · {{ auditResult.duration_ms }} ms
+            <div class="mono key-value">{{ auditResult.head_hash }}</div>
+          </div>
+        </div>
+
+        <div v-if="can('maintenance:run')" class="panel">
+          <h2>Maintenance</h2>
+          <p class="panel-text">
+            Applique les durées de conservation : jetons du vault expirés
+            supprimés, clés d'audit hors rétention détruites. Les entrées
+            d'audit, elles, sont conservées — la chaîne doit rester
+            vérifiable. La même passe tourne automatiquement.
+          </p>
+          <button class="primary" @click="runPurge"
+                  :disabled="adminBusy === 'purge'">
+            {{ adminBusy === 'purge' ? "Purge…" : "Lancer une purge" }}
+          </button>
+          <div v-if="purgeResult" class="playground-output">
+            {{ purgeResult.vault_tokens_deleted }} jeton(s) supprimé(s) ·
+            {{ purgeResult.audit_entities_shredded }} clé(s) d'audit détruite(s) ·
+            {{ purgeResult.revocations_purged }} révocation(s) purgée(s)
+          </div>
+        </div>
+      </div>
+    </template>
+
     <template v-else-if="activeTab === 'corpus'">
       <div class="grid-mid">
         <div class="panel">
@@ -664,6 +899,23 @@ function ts(t) {
   cursor: pointer;
 }
 .logout:hover { background: #f4f4f5; }
+.role-badge {
+  margin-left: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: #fff4e5;
+  border: 1px solid #f5c384;
+  color: #8f5304;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.btn-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.key-value {
+  margin-top: 8px;
+  word-break: break-all;
+  font-size: 12px;
+}
 
 /* ---------- En-tête : boutons-liens ---------- */
 .link-btn {

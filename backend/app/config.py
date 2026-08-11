@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     # Sans restriction, tout compte connu du fournisseur entrerait.
     oidc_allowed_domains: str = ""   # ex. "monentreprise.fr,filiale.fr"
     oidc_allowed_groups: str = ""    # ex. "rssi,dpo" (revendication `groups`)
+    # Correspondance groupes -> rôles de la console. Un compte
+    # autorisé mais sans groupe reconnu reçoit le rôle le plus
+    # faible : une configuration incomplète ne doit pas donner
+    # les droits d'administration.
+    oidc_admin_groups: str = ""      # ex. "rssi,it-admin"
+    oidc_auditor_groups: str = ""    # ex. "dpo,audit-interne"
+    oidc_viewer_groups: str = ""     # ex. "soc,analystes"
     # Durée d'une session dashboard, en heures.
     session_ttl_hours: int = 8
     # Cookie `Secure` : à laisser vrai partout sauf en HTTP local.

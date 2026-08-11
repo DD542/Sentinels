@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/DD542/sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/DD542/sentinel/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-300%20passed-brightgreen)](https://github.com/DD542/sentinel)
+[![Tests](https://img.shields.io/badge/tests-320%20passed-brightgreen)](https://github.com/DD542/sentinel)
 [![Benchmark](https://img.shields.io/badge/detection%20F1-100%25-brightgreen)](https://github.com/DD542/sentinel)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -72,7 +72,7 @@ Benchmark sur **89 prompts étiquetés** (`backend/tests/benchmark.py`) :
 | **Global** | **100 %** | **100 %** | **100 %** |
 
 **42 prompts innocents traités sans aucun faux positif.** Latence moyenne : ~100 ms/prompt.
-Suite de tests : **300 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
+Suite de tests : **320 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
 
 > Ces chiffres portent sur le jeu de test fourni, qui couvre les formats structurés, l'obfuscation (base64, hexadécimal, espacement) et les tentatives d'évasion. Ils ne constituent pas une garantie de détection exhaustive — voir [Limites connues](#limites-connues).
 
@@ -119,6 +119,8 @@ python tests/benchmark_external.py --rows 1000 --json
 ** Livrables conformité.** Rapport d'audit **signé HMAC-SHA256** généré par l'API (HTML imprimable en PDF + JSON canonique re-vérifiable), [cartographie AI Act/RGPD article par article](docs/conformite-ai-act.md), et [registre de traitement art. 30 pré-rempli](docs/registre-rgpd.md). Le DPO reçoit des documents, pas des promesses.
 
 ** Politique de conservation explicite.** [Ce que SENTINEL stocke et ne stocke jamais](docs/politique-retention.md), table par table, avec les durées et les moyens de le vérifier soi-même. Le prompt brut et la réponse de l'IA ne sont **jamais** écrits sur disque : SENTINEL journalise les décisions, pas les conversations.
+
+** Console d'administration et rôles.** Clés, consommation, vérification du journal et maintenance depuis l'interface — plus de `curl`. Trois rôles ([administrateur, auditeur, observateur](docs/roles-console.md)) attribués par les groupes du fournisseur d'identité : **un DPO lit les rapports de conformité mais ne peut ni créer une clé, ni voir la facturation**. La console masque ce qui n'est pas autorisé ; le serveur le refuse.
 
 ** Réglage par client.** Le faux positif coûte plus cher que le faux négatif : si l'outil tokenise votre raison sociale à chaque prompt, l'employé le contourne. Chaque client règle **sa** détection — [liste d'exceptions, seuils par type, actions](docs/reglage-detection.md) — mais jamais discrètement : toute modification est scellée dans l'audit et les dégradations remontent dans le rapport de conformité.
 
@@ -273,6 +275,7 @@ Le fournisseur reçoit `Hugo Blanc` et un IBAN factice valide. L'employé reçoi
 | `/compliance/report.json` | GET | token dashboard¹ | Rapport canonique signé HMAC (vérifiable) |
 | `/auth/login` | GET | — | Démarre la connexion SSO (OIDC + PKCE) |
 | `/auth/callback` | GET | — | Retour du fournisseur d'identité |
+| `/auth/me` | GET | — | Rôle et permissions de l'appelant |
 | `/auth/logout` | POST | — | Ferme **et révoque** la session |
 | `/auth/revoke` | POST | token admin | Coupe les sessions d'un compte, ou toutes |
 | `/dashboard/stats` | GET | session SSO ou token¹ | Compteurs et événements récents |
@@ -393,6 +396,7 @@ Ces limites sont documentées **parce qu'elles existent dans toutes les solution
 - [x] **SSO d'entreprise OIDC** (PKCE, JWKS, restriction par domaine/groupe, session chiffrée) : connexions nominatives scellées dans l'audit
 - [x] **Révocation de session** (session, compte ou globale) : un cookie volé cesse d'être valable, la déconnexion tue réellement la session
 - [x] **Images signées** (cosign sans clé) avec **provenance SLSA** et **SBOM attesté** : un client peut vérifier l'origine avant de déployer
+- [x] **Console d'administration + rôles** (administrateur / auditeur / observateur, groupes OIDC) : opérations à l'interface, permissions vérifiées côté serveur
 - [x] **Réglage de détection par client** (exceptions, seuils, actions) : scellé dans l'audit, dégradations signalées au DPO, métrique des détections écartées
 - [x] **Vérification d'audit à coût constant** : l'état est rapporté en O(1) sur le chemin des requêtes, contrôle incrémental à chaque passe de maintenance, complet périodiquement et à la demande — mesuré, **5 064 ms → 1,2 µs** par requête à 100 000 entrées
 
@@ -435,7 +439,7 @@ Benchmark over **89 labelled prompts** (`backend/tests/benchmark.py`):
 | **Overall** | **100%** | **100%** | **100%** |
 
 **42 innocent prompts processed with zero false positives.** Average latency: ~100 ms/prompt.
-Test suite: **300 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
+Test suite: **320 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
 
 > These figures cover the provided test set (structured formats, base64/hex/spacing obfuscation, evasion attempts). They are not a guarantee of exhaustive detection — see [Known limitations](#known-limitations).
 
@@ -556,6 +560,7 @@ cd ../frontend && npm install && npm run dev    # dashboard
 | `/compliance/report.json` | GET | dashboard token¹ | Canonical HMAC-signed report (verifiable) |
 | `/auth/login` | GET | — | Start SSO login (OIDC + PKCE) |
 | `/auth/callback` | GET | — | Identity provider callback |
+| `/auth/me` | GET | — | Caller's role and permissions |
 | `/auth/logout` | POST | — | End **and revoke** the session |
 | `/auth/revoke` | POST | admin token | Cut a person's sessions, or all of them |
 | `/dashboard/stats` | GET | SSO session or token¹ | Counters and recent events |
@@ -626,6 +631,7 @@ These limitations are documented **because they exist in every solution on the m
 - [x] **Enterprise OIDC SSO** (PKCE, JWKS, domain/group restriction, encrypted session): named logins sealed in the audit chain
 - [x] **Session revocation** (session, account or global): a stolen cookie stops working, logout actually kills the session
 - [x] **Signed images** (keyless cosign) with **SLSA provenance** and **attested SBOM**: customers can verify provenance before deploying
+- [x] **Admin console + roles** (admin / auditor / viewer, mapped from OIDC groups): operations from the UI, permissions enforced server-side
 - [x] **Per-client detection tuning** (exceptions, thresholds, actions): sealed in the audit chain, weakenings surfaced to the DPO, suppressed-detection metric
 - [x] **Constant-cost audit verification**: O(1) status on the request path, incremental check each maintenance pass, full check periodically and on demand — measured **5,064 ms → 1.2 µs** per request at 100,000 entries
 

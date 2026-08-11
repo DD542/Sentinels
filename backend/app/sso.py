@@ -30,7 +30,7 @@ from urllib.parse import urlencode
 import httpx
 import jwt
 from cryptography.fernet import Fernet, InvalidToken
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
@@ -270,19 +270,25 @@ async def callback(request: Request, code: str | None = None,
             subject=claims.get("email"))
         raise HTTPException(status_code=403, detail=f"Acces refuse : {refus}")
 
+    from . import rbac
+    role = (rbac.role_from_groups(claims.get("groups") or claims.get("roles"))
+            or rbac.default_sso_role())
     identity = {
         "sub": claims.get("sub"),
         "email": claims.get("email"),
         "name": claims.get("name") or claims.get("preferred_username"),
+        "role": role,
     }
     # Connexion nominative scellée : c'est ce que le token partagé ne
     # permettait pas. L'identité est indexée en aveugle et chiffrée.
     entry = await chain.append_async(
         "AUTH_LOGIN", "SSO", f"sso:{identity['sub']}",
-        {"email": identity["email"], "name": identity["name"]},
+        {"email": identity["email"], "name": identity["name"],
+         "role": identity["role"]},
         subject=identity["email"])
     _log.info("connexion SSO", extra={
-        "event": "sso_login", "audit_hash": entry["hash"][:12]})
+        "event": "sso_login", "role": identity["role"],
+        "audit_hash": entry["hash"][:12]})
 
     response = RedirectResponse(_safe_next(contexte.get("next")), status_code=302)
     response.set_cookie(
@@ -327,6 +333,27 @@ class RevokeRequest(BaseModel):
     all_sessions: bool = False
 
 
+@router.get("/auth/me")
+async def whoami(request: Request,
+                 x_admin_token: str | None = Header(default=None),
+                 x_dashboard_token: str | None = Header(default=None)) -> dict:
+    """Identité et droits de l'appelant — la console s'en sert pour
+    n'afficher que ce qui lui est permis.
+
+    Les jetons sont pris en compte au même titre que la session : sans
+    SSO, un exploitant doit pouvoir découvrir ses droits en présentant
+    son jeton d'administration."""
+    from . import rbac
+    role, identite = rbac.resolve(request, x_admin_token, x_dashboard_token)
+    return {
+        "authenticated": bool(role),
+        "role": role,
+        "permissions": sorted(rbac.permissions(role)),
+        "email": identite.get("email"),
+        "name": identite.get("name"),
+    }
+
+
 @router.post("/auth/logout")
 async def logout(request: Request) -> JSONResponse:
     """Déconnexion : le cookie est effacé ET la session révoquée. Sans la
@@ -341,12 +368,11 @@ async def logout(request: Request) -> JSONResponse:
 
 
 @router.post("/auth/revoke")
-async def revoke(req: RevokeRequest) -> dict:
+async def revoke(req: RevokeRequest, request: Request) -> dict:
     """Coupe les sessions d'un compte, ou toutes (incident). Protégé par
     le token admin et scellé dans le journal d'audit."""
-    if not secrets.compare_digest(req.admin_token,
-                                  settings.effective_admin_token):
-        raise HTTPException(status_code=403, detail="Token admin invalide")
+    from . import rbac
+    rbac.authorize_body_token(request, req.admin_token, rbac.KEYS_MANAGE)
 
     if req.all_sessions:
         await revocation.revoke_all()

@@ -18,7 +18,7 @@ import json
 import secrets
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -29,6 +29,7 @@ from .audit import subjects as audit_subjects
 from . import events
 from . import db
 from . import policy
+from . import rbac
 
 settings = get_settings()
 router = APIRouter()
@@ -111,7 +112,7 @@ class ForgetRequest(BaseModel):
 
 
 @router.post("/compliance/forget")
-async def forget_entity(req: ForgetRequest) -> dict:
+async def forget_entity(req: ForgetRequest, request: Request) -> dict:
     """Droit à l'effacement (RGPD art. 17) par crypto-shredding.
 
     Détruit la clé de chiffrement de l'entité `entity_id` : le détail de
@@ -119,9 +120,7 @@ async def forget_entity(req: ForgetRequest) -> dict:
     que la chaîne de hachage reste intègre (on prouve qu'un traitement a
     eu lieu sans jamais pouvoir relire la donnée personnelle). L'effacement
     est lui-même scellé dans le journal. Protégé par le token admin."""
-    if not secrets.compare_digest(req.admin_token,
-                                  settings.effective_admin_token):
-        raise HTTPException(status_code=403, detail="Token admin invalide")
+    rbac.authorize_body_token(request, req.admin_token, rbac.GDPR_MANAGE)
     affected = await chain.forget_async(req.entity_id)
     # L'acte d'effacement est tracé (sous une entité distincte, non oubliée).
     entry = await chain.append_async(
@@ -142,21 +141,19 @@ class SubjectRequest(BaseModel):
 
 
 @router.post("/compliance/subject")
-async def subject_access(req: SubjectRequest) -> dict:
+async def subject_access(req: SubjectRequest, request: Request) -> dict:
     """Droit d'accès (RGPD art. 15) : ce que le journal contient sur une
     personne, en **métadonnées** (nombre d'entrées, types, période).
 
     La valeur transmise sert uniquement à recalculer la référence
     aveugle : elle n'est ni stockée, ni journalisée, et la réponse ne
     renvoie aucune donnée déchiffrée."""
-    if not secrets.compare_digest(req.admin_token,
-                                  settings.effective_admin_token):
-        raise HTTPException(status_code=403, detail="Token admin invalide")
+    rbac.authorize_body_token(request, req.admin_token, rbac.GDPR_MANAGE)
     return await chain.subject_summary(req.value)
 
 
 @router.post("/compliance/forget-subject")
-async def forget_subject(req: SubjectRequest) -> dict:
+async def forget_subject(req: SubjectRequest, request: Request) -> dict:
     """Droit à l'effacement (RGPD art. 17) visant **une personne**.
 
     Détruit sa clé de chiffrement : toutes ses entrées deviennent
@@ -164,9 +161,7 @@ async def forget_subject(req: SubjectRequest) -> dict:
     intacte — la preuve qu'un traitement a eu lieu demeure. L'acte
     d'effacement est scellé dans le journal avec la référence aveugle,
     jamais l'identité en clair."""
-    if not secrets.compare_digest(req.admin_token,
-                                  settings.effective_admin_token):
-        raise HTTPException(status_code=403, detail="Token admin invalide")
+    rbac.authorize_body_token(request, req.admin_token, rbac.GDPR_MANAGE)
 
     ref = audit_subjects.subject_ref(req.value)
     if ref is None:

@@ -5,7 +5,7 @@ import secrets
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, Header, HTTPException, Response
+from fastapi import FastAPI, Depends, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -29,6 +29,7 @@ from . import logs
 from . import maintenance
 from . import revocation
 from . import policy
+from . import rbac
 
 settings = get_settings()
 
@@ -150,12 +151,10 @@ async def prometheus_metrics() -> Response:
 
 
 @app.post("/admin/keys")
-async def create_key(req: KeyRequest) -> dict:
+async def create_key(req: KeyRequest, request: Request) -> dict:
     """Crée une clé API client. Protégé par le token admin dédié
     (ADMIN_TOKEN du .env ; repli sur la clé HMAC d'audit si absent)."""
-    if not secrets.compare_digest(req.admin_token,
-                                  settings.effective_admin_token):
-        raise HTTPException(status_code=403, detail="Token admin invalide")
+    rbac.authorize_body_token(request, req.admin_token, rbac.KEYS_MANAGE)
     raw_key = await auth.generate_key_async(req.client_id)
     return {
         "client_id": req.client_id,
@@ -165,13 +164,11 @@ async def create_key(req: KeyRequest) -> dict:
 
 
 @app.post("/admin/keys/revoke")
-async def revoke_keys(req: RevokeRequest) -> dict:
+async def revoke_keys(req: RevokeRequest, request: Request) -> dict:
     """Revoque toutes les cles d'un client (cle compromise, fin de contrat).
     Effet immediat : la prochaine requete du client est rejetee en 401.
     La revocation est scellee dans la chaine d'audit."""
-    if not secrets.compare_digest(req.admin_token,
-                                  settings.effective_admin_token):
-        raise HTTPException(status_code=403, detail="Token admin invalide")
+    rbac.authorize_body_token(request, req.admin_token, rbac.KEYS_MANAGE)
     count = await auth.revoke_client(req.client_id)
     if count == 0:
         raise HTTPException(status_code=404,
@@ -183,15 +180,14 @@ async def revoke_keys(req: RevokeRequest) -> dict:
 
 
 @app.get("/admin/usage")
-async def usage(x_admin_token: str | None = Header(default=None),
+async def usage(request: Request,
+                x_admin_token: str | None = Header(default=None),
                 days: int = 30) -> dict:
     """Consommation par client (prompts, tokenisations, blocages) —
     base de facturation a l'usage. Protege par le token admin.
     Avec persistance : totaux lus en DB (source de verite, survit aux
     redemarrages) + ventilation journaliere sur `days` jours."""
-    if not x_admin_token or not secrets.compare_digest(
-            x_admin_token, settings.effective_admin_token):
-        raise HTTPException(status_code=403, detail="Token admin invalide")
+    rbac.authorize_body_token(request, x_admin_token or "", rbac.USAGE_READ)
 
     if db.is_enabled():
         try:
@@ -227,7 +223,8 @@ async def usage(x_admin_token: str | None = Header(default=None),
 
 
 @app.get("/admin/audit/verify")
-async def verify_audit(x_admin_token: str | None = Header(default=None),
+async def verify_audit(request: Request,
+                       x_admin_token: str | None = Header(default=None),
                        full: bool = True) -> dict:
     """Vérifie le journal à la demande.
 
@@ -235,9 +232,8 @@ async def verify_audit(x_admin_token: str | None = Header(default=None),
     la seule vérification qui détecte une altération ancienne, et son
     coût est proportionnel à l'historique. `full=false` ne contrôle que
     les entrées ajoutées depuis le dernier point de contrôle."""
-    if not x_admin_token or not secrets.compare_digest(
-            x_admin_token, settings.effective_admin_token):
-        raise HTTPException(status_code=403, detail="Token admin invalide")
+    rbac.authorize_body_token(request, x_admin_token or "",
+                              rbac.AUDIT_VERIFY)
     debut = time.perf_counter()
     if full:
         verifie = await chain.verify_integrity_async()
@@ -252,14 +248,14 @@ async def verify_audit(x_admin_token: str | None = Header(default=None),
 
 
 @app.post("/admin/maintenance/purge")
-async def trigger_purge(x_admin_token: str | None = Header(default=None)) -> dict:
+async def trigger_purge(request: Request,
+                        x_admin_token: str | None = Header(default=None)) -> dict:
     """Déclenche une passe de purge à la demande (la même tourne
     périodiquement) : tokens du vault expirés supprimés, clés d'audit
     hors rétention détruites. Les entrées d'audit, elles, ne sont jamais
     supprimées — la chaîne doit rester vérifiable."""
-    if not x_admin_token or not secrets.compare_digest(
-            x_admin_token, settings.effective_admin_token):
-        raise HTTPException(status_code=403, detail="Token admin invalide")
+    rbac.authorize_body_token(request, x_admin_token or "",
+                              rbac.MAINTENANCE_RUN)
     result = await maintenance.run_once()
     return {
         **result,

@@ -7,6 +7,9 @@ export function useSentinel() {
   const connected = ref(false);
   const authRequired = ref(false);
   const ssoEnabled = ref(false);
+  const role = ref(null);
+  const permissions = ref([]);
+  const identity = ref(null);
   const loginUrl = ref(`${API_BASE}/auth/login`);
   const auditIntegrity = ref(true);
   const stats = reactive({
@@ -108,6 +111,26 @@ export function useSentinel() {
     connect();
   }
 
+  // Qui suis-je et que puis-je faire ? La console n'affiche que les
+  // ecrans autorises — le serveur refait le controle de toute facon.
+  async function loadIdentity(adminToken) {
+    try {
+      const headers = {};
+      if (adminToken) headers["X-Admin-Token"] = adminToken;
+      const r = await fetch(`${API_BASE}/auth/me`, {
+        credentials: "include", headers,
+      });
+      const me = await r.json();
+      role.value = me.role;
+      permissions.value = me.permissions || [];
+      identity.value = me.email || me.name || null;
+    } catch (_) { /* backend pas pret */ }
+  }
+
+  function can(permission) {
+    return permissions.value.includes(permission);
+  }
+
   async function loadAuthConfig() {
     try {
       const r = await fetch(`${API_BASE}/auth/config`, { credentials: "include" });
@@ -127,12 +150,15 @@ export function useSentinel() {
     authRequired.value = true;
   }
 
-  onMounted(() => { loadAuthConfig(); loadInitial(); connect(); });
+  onMounted(() => {
+    loadAuthConfig(); loadIdentity(); loadInitial(); connect();
+  });
   onUnmounted(() => {
     if (ws) ws.close();
     if (reconnectTimer) clearTimeout(reconnectTimer);
   });
 
   return { connected, authRequired, ssoEnabled, loginUrl, auditIntegrity,
+           role, permissions, identity, can, loadIdentity,
            stats, feed, scans, setToken, logout };
 }
