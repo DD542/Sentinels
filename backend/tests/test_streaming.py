@@ -121,14 +121,15 @@ def api_key(client):
 @pytest.fixture
 def flux_fournisseur(monkeypatch):
     """Simule un fournisseur qui emet le jeton FPE en deux morceaux."""
-    async def _fake(provider, model, messages, max_tokens, temperature=None):
+    async def _fake(provider, model, messages, max_tokens, temperature=None,
+                    extras=None):
         recu = messages[-1]["content"]
         token = next((mot for mot in recu.split() if mot.startswith("FR")), "")
-        yield "Le virement vers ", None, None
-        yield token[:8], None, None            # jeton coupe en plein milieu
-        yield token[8:], None, None
-        yield " est programme.", "stop", None
-        yield "", None, {"prompt_tokens": 10, "completion_tokens": 5,
+        yield {"content": "Le virement vers "}, None, None
+        yield {"content": token[:8]}, None, None   # jeton coupe en plein milieu
+        yield {"content": token[8:]}, None, None
+        yield {"content": " est programme."}, "stop", None
+        yield {}, None, {"prompt_tokens": 10, "completion_tokens": 5,
                          "total_tokens": 15}
 
     monkeypatch.setattr(openai_compat, "_stream_v1", _fake)
@@ -169,8 +170,8 @@ class TestNativeStreamEndpoint:
         """Le flux a deja commence : on ne peut plus renvoyer un code HTTP,
         l'erreur doit etre signalee dans le flux."""
         async def _casse(provider, model, messages, max_tokens,
-                         temperature=None):
-            yield "debut de reponse", None, None
+                         temperature=None, extras=None):
+            yield {"content": "debut de reponse"}, None, None
             raise RuntimeError("connexion perdue")
 
         monkeypatch.setattr(openai_compat, "_stream_v1", _casse)
@@ -189,9 +190,10 @@ class TestNativeStreamEndpoint:
         monkeypatch.setattr(settings, "stream_native", False)
 
         async def _fake(provider, model, messages, max_tokens,
-                        temperature=None):
-            return f"Reponse : {messages[-1]['content']}", dict(
-                prompt_tokens=1, completion_tokens=1, total_tokens=2)
+                        temperature=None, extras=None):
+            return ({"role": "assistant",
+                     "content": f"Reponse : {messages[-1]['content']}"},
+                    dict(prompt_tokens=1, completion_tokens=1, total_tokens=2))
 
         monkeypatch.setattr(openai_compat, "_forward_v1", _fake)
         resp = client.post("/v1/chat/completions", json={

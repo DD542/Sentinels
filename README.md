@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/DD542/sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/DD542/sentinel/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-362%20passed-brightgreen)](https://github.com/DD542/sentinel)
+[![Tests](https://img.shields.io/badge/tests-375%20passed-brightgreen)](https://github.com/DD542/sentinel)
 [![Benchmark](https://img.shields.io/badge/detection%20F1-100%25-brightgreen)](https://github.com/DD542/sentinel)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -72,7 +72,7 @@ Benchmark sur **89 prompts étiquetés** (`backend/tests/benchmark.py`) :
 | **Global** | **100 %** | **100 %** | **100 %** |
 
 **42 prompts innocents traités sans aucun faux positif.** Latence moyenne : ~100 ms/prompt.
-Suite de tests : **362 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
+Suite de tests : **375 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
 
 > Ces chiffres portent sur le jeu de test fourni, qui couvre les formats structurés, l'obfuscation (base64, hexadécimal, espacement) et les tentatives d'évasion. Ils ne constituent pas une garantie de détection exhaustive — voir [Limites connues](#limites-connues).
 
@@ -412,6 +412,7 @@ Ces limites sont documentées **parce qu'elles existent dans toutes les solution
 - [x] **SSO d'entreprise OIDC** (PKCE, JWKS, restriction par domaine/groupe, session chiffrée) : connexions nominatives scellées dans l'audit
 - [x] **Révocation de session** (session, compte ou globale) : un cookie volé cesse d'être valable, la déconnexion tue réellement la session
 - [x] **Images signées** (cosign sans clé) avec **provenance SLSA** et **SBOM attesté** : un client peut vérifier l'origine avant de déployer
+- [x] **Compatibilité OpenAI réelle** : `tools`, contenu multimodal, `response_format`, `seed`, `top_p` relayés au lieu d'être abandonnés en silence ; les arguments d'appel d'outil sont assainis à l'aller et **restaurés au retour**, y compris en streaming
 - [x] **Vault cloisonné par client** + **unicité des jetons garantie** (0 collision sur 2 000 personnes) : deux défauts trouvés par preuve de concept, corrigés et verrouillés par tests
 - [x] **Juge local pour le rappel sur texte libre** (`deep_scan` par client) : rappel PERSON de 41 % à 94 %, F1 de 44 % à 76 %, entités hallucinées rejetées, dégradation propre sans Ollama
 - [x] **Chaîne d'audit cloisonnée par client** : une chaîne par organisation, vérifiable et exportable indépendamment — indispensable en SaaS mutualisé
@@ -458,7 +459,7 @@ Benchmark over **89 labelled prompts** (`backend/tests/benchmark.py`):
 | **Overall** | **100%** | **100%** | **100%** |
 
 **42 innocent prompts processed with zero false positives.** Average latency: ~100 ms/prompt.
-Test suite: **362 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
+Test suite: **375 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
 
 > These figures cover the provided test set (structured formats, base64/hex/spacing obfuscation, evasion attempts). They are not a guarantee of exhaustive detection — see [Known limitations](#known-limitations).
 
@@ -651,6 +652,7 @@ These limitations are documented **because they exist in every solution on the m
 - [x] **Enterprise OIDC SSO** (PKCE, JWKS, domain/group restriction, encrypted session): named logins sealed in the audit chain
 - [x] **Session revocation** (session, account or global): a stolen cookie stops working, logout actually kills the session
 - [x] **Signed images** (keyless cosign) with **SLSA provenance** and **attested SBOM**: customers can verify provenance before deploying
+- [x] **Real OpenAI compatibility**: `tools`, multimodal content, `response_format`, `seed`, `top_p` forwarded instead of silently dropped; tool-call arguments sanitised outbound and **restored inbound**, streaming included
 - [x] **Per-client vault partitioning** + **guaranteed token uniqueness** (0 collisions over 2,000 people): two defects found by proof of concept, fixed and locked by tests
 - [x] **Local LLM judge for free-text recall** (per-client `deep_scan`): PERSON recall 41 % → 94 %, F1 44 % → 76 %, hallucinated entities rejected, graceful degradation without Ollama
 - [x] **Per-tenant audit chain**: one chain per organisation, independently verifiable and exportable — a prerequisite for multi-tenant SaaS

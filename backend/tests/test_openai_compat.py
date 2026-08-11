@@ -46,13 +46,17 @@ def fake_provider(monkeypatch):
     recu (donc le contenu deja assaini) et capture ce qui a ete transmis."""
     captured = {}
 
-    async def _fake(provider, model, messages, max_tokens, temperature=None):
+    async def _fake(provider, model, messages, max_tokens, temperature=None,
+                    extras=None):
         captured["provider"] = provider
         captured["messages"] = messages
         captured["temperature"] = temperature
+        captured["extras"] = extras
         echo = messages[-1]["content"]
-        return f"Reponse concernant : {echo}", {
-            "prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19}
+        return ({"role": "assistant",
+                 "content": f"Reponse concernant : {echo}"},
+                {"prompt_tokens": 12, "completion_tokens": 7,
+                 "total_tokens": 19})
 
     monkeypatch.setattr(openai_compat, "_forward_v1", _fake)
     return captured

@@ -1,11 +1,33 @@
+"""
+Passerelle compatible OpenAI.
+
+Principe : n'importe quel outil configuré avec `base_url=http://<sentinel>/v1`
+et une clé `sntl_…` passe par le pipeline SENTINEL avant d'atteindre le vrai
+fournisseur, déterminé depuis le nom du modèle.
+
+Deux règles gouvernent ce module, apprises d'un défaut réel : le modèle de
+requête n'acceptait que `role` et `content: str`, si bien que les champs
+modernes — `tools`, `response_format`, `seed`, contenu multimodal —
+étaient **silencieusement abandonnés** avec un HTTP 200. L'intégration du
+client cassait sans erreur, et la faute semblait venir de chez lui.
+
+  1. **Ne jamais perdre un champ en silence.** Tout ce qui arrive est
+     relayé au fournisseur, et la réponse du fournisseur est relayée au
+     client telle quelle.
+  2. **Ne jamais relayer un champ sans l'assainir.** Tout ce qui peut
+     porter du texte utilisateur passe par la détection : contenu
+     textuel, parties texte d'un contenu multimodal, arguments d'appel
+     d'outil, description des outils.
+"""
 from __future__ import annotations
 import json
 import time
 import uuid
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from ..config import get_settings
 from .. import auth
@@ -19,13 +41,27 @@ _log = logs.get_logger("gateway")
 
 _EMPTY_USAGE = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
+# Champs que SENTINEL interprète lui-même : ils ne sont pas relayés tels
+# quels. Tout le reste (top_p, seed, response_format, tools, stop,
+# frequency_penalty, user…) part vers le fournisseur sans être touché.
+_CHAMPS_INTERNES = {"model", "messages", "max_tokens", "temperature", "stream",
+                    "stream_options"}
+
 
 class Message(BaseModel):
+    """Message OpenAI. `content` peut être une chaîne, une liste de
+    parties (multimodal) ou nul (message porteur d'appels d'outil).
+    Les champs supplémentaires — `name`, `tool_calls`, `tool_call_id` —
+    sont conservés."""
+    model_config = ConfigDict(extra="allow")
+
     role: str
-    content: str
+    content: str | list | None = None
 
 
 class ChatCompletionRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     model: str
     messages: list[Message]
     max_tokens: int = 1024
@@ -62,19 +98,162 @@ def _provider_key(provider: str) -> str:
     return key
 
 
+# ============================================================
+# Assainissement : tout ce qui porte du texte, quel que soit le champ
+# ============================================================
+
+async def _assainir_texte(texte: str, client_id: str) -> tuple[str, bool]:
+    if not texte:
+        return texte, False
+    propre, _decisions, bloque = await _sanitize(texte, client_id)
+    return propre, bloque
+
+
+async def _assainir_contenu(contenu, client_id: str) -> tuple[object, bool]:
+    """Contenu d'un message : chaîne, ou liste de parties multimodales.
+
+    Les parties non textuelles (image, audio) traversent intactes : les
+    inspecter n'aurait aucun sens et les altérer casserait la requête."""
+    if isinstance(contenu, str):
+        return await _assainir_texte(contenu, client_id)
+    if isinstance(contenu, list):
+        parties, bloque_global = [], False
+        for partie in contenu:
+            if isinstance(partie, dict) and isinstance(partie.get("text"), str):
+                propre, bloque = await _assainir_texte(partie["text"], client_id)
+                parties.append({**partie, "text": propre})
+                bloque_global = bloque_global or bloque
+            else:
+                parties.append(partie)
+        return parties, bloque_global
+    return contenu, False
+
+
+async def _assainir_appels_outil(tool_calls, client_id: str) -> tuple[list, bool]:
+    """Les arguments d'un appel d'outil sont du JSON encodé en chaîne —
+    et ils portent très souvent la donnée sensible : c'est là qu'un agent
+    place l'IBAN ou le nom du client. Les laisser passer viderait la
+    passerelle de son sens."""
+    if not isinstance(tool_calls, list):
+        return tool_calls, False
+    sortie, bloque_global = [], False
+    for appel in tool_calls:
+        if not isinstance(appel, dict):
+            sortie.append(appel)
+            continue
+        fonction = appel.get("function")
+        if isinstance(fonction, dict) and isinstance(fonction.get("arguments"), str):
+            propre, bloque = await _assainir_texte(fonction["arguments"], client_id)
+            sortie.append({**appel, "function": {**fonction, "arguments": propre}})
+            bloque_global = bloque_global or bloque
+        else:
+            sortie.append(appel)
+    return sortie, bloque_global
+
+
+async def _assainir_message(message: dict, client_id: str) -> tuple[dict, bool]:
+    propre = dict(message)
+    bloque = False
+    if "content" in propre:
+        propre["content"], b = await _assainir_contenu(propre["content"], client_id)
+        bloque = bloque or b
+    if propre.get("tool_calls"):
+        propre["tool_calls"], b = await _assainir_appels_outil(
+            propre["tool_calls"], client_id)
+        bloque = bloque or b
+    return propre, bloque
+
+
+async def _assainir_outils(tools, client_id: str) -> tuple[object, bool]:
+    """Seules les descriptions en langage naturel sont assainies : le
+    schéma JSON des paramètres reste intact, sous peine de rendre l'outil
+    inutilisable."""
+    if not isinstance(tools, list):
+        return tools, False
+    sortie, bloque_global = [], False
+    for outil in tools:
+        if isinstance(outil, dict) and isinstance(outil.get("function"), dict):
+            fonction = outil["function"]
+            if isinstance(fonction.get("description"), str):
+                propre, bloque = await _assainir_texte(
+                    fonction["description"], client_id)
+                sortie.append({**outil,
+                               "function": {**fonction, "description": propre}})
+                bloque_global = bloque_global or bloque
+                continue
+        sortie.append(outil)
+    return sortie, bloque_global
+
+
+# ============================================================
+# Désanonymisation de la réponse
+# ============================================================
+
+async def _restaurer_message(message: dict, client_id: str) -> dict:
+    """Restaure les vraies valeurs dans la réponse du fournisseur.
+
+    Les `tool_calls` comptent autant que le texte : sans ça, l'outil du
+    client recevrait un IBAN factice et virerait de l'argent nulle part."""
+    sortie = dict(message)
+    if isinstance(sortie.get("content"), str) and sortie["content"]:
+        sortie["content"] = await fpe.detokenize_async(sortie["content"], client_id)
+    appels = sortie.get("tool_calls")
+    if isinstance(appels, list):
+        restaures = []
+        for appel in appels:
+            fonction = appel.get("function") if isinstance(appel, dict) else None
+            if isinstance(fonction, dict) and isinstance(fonction.get("arguments"), str):
+                restaures.append({**appel, "function": {
+                    **fonction,
+                    "arguments": await fpe.detokenize_async(
+                        fonction["arguments"], client_id)}})
+            else:
+                restaures.append(appel)
+        sortie["tool_calls"] = restaures
+    return sortie
+
+
+# ============================================================
+# Appel du fournisseur
+# ============================================================
+
+def _url_fournisseur(provider: str) -> str:
+    if provider == "mistral":
+        return f"{settings.mistral_base}/v1/chat/completions"
+    if provider == "groq":
+        return f"{settings.groq_base}/openai/v1/chat/completions"
+    return f"{settings.openai_base}/v1/chat/completions"
+
+
+def _charge_utile(provider: str, model: str, messages: list[dict],
+                  max_tokens: int, temperature: float | None,
+                  extras: dict | None) -> dict:
+    """Construit la requête amont. Les champs non interprétés par
+    SENTINEL sont relayés tels quels : c'est ce qui rend la passerelle
+    réellement compatible."""
+    payload = {"model": model, "max_tokens": max_tokens, "messages": messages}
+    if temperature is not None:
+        payload["temperature"] = temperature
+    if extras and provider != "anthropic":
+        # Anthropic n'utilise pas le schéma OpenAI pour `tools` ni pour
+        # plusieurs paramètres : on ne relaie pas ce qu'on ne sait pas
+        # traduire, plutôt que d'envoyer une requête invalide.
+        payload.update({k: v for k, v in extras.items()
+                        if k not in _CHAMPS_INTERNES})
+    return payload
+
+
 async def _forward_v1(provider: str, model: str, messages: list[dict],
-                      max_tokens: int,
-                      temperature: float | None = None) -> tuple[str, dict]:
-    """Appelle le vrai fournisseur avec la cle stockee cote serveur.
-    Retourne (texte, usage au format OpenAI)."""
+                      max_tokens: int, temperature: float | None = None,
+                      extras: dict | None = None) -> tuple[dict, dict]:
+    """Appelle le fournisseur. Retourne (message complet, usage) — le
+    message, pas seulement son texte : il peut porter des `tool_calls`."""
     api_key = _provider_key(provider)
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         if provider == "anthropic":
-            payload = {"model": model, "max_tokens": max_tokens,
-                       "messages": messages}
-            if temperature is not None:
-                payload["temperature"] = temperature
+            payload = _charge_utile(provider, model, messages, max_tokens,
+                                    temperature, extras)
             resp = await client.post(
                 f"{settings.anthropic_base}/v1/messages",
                 headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
@@ -88,28 +267,21 @@ async def _forward_v1(provider: str, model: str, messages: list[dict],
                 "completion_tokens": u.get("output_tokens", 0),
                 "total_tokens": u.get("input_tokens", 0) + u.get("output_tokens", 0),
             }
-            return "".join(b.get("text", "") for b in data.get("content", [])), usage
+            texte = "".join(b.get("text", "") for b in data.get("content", []))
+            return {"role": "assistant", "content": texte}, usage
 
-        if provider == "mistral":
-            url = f"{settings.mistral_base}/v1/chat/completions"
-        elif provider == "groq":
-            url = f"{settings.groq_base}/openai/v1/chat/completions"
-        else:  # openai
-            url = f"{settings.openai_base}/v1/chat/completions"
-
-        payload = {"model": model, "max_tokens": max_tokens,
-                   "messages": messages}
-        if temperature is not None:
-            payload["temperature"] = temperature
         resp = await client.post(
-            url,
+            _url_fournisseur(provider),
             headers={"Authorization": f"Bearer {api_key}"},
-            json=payload,
+            json=_charge_utile(provider, model, messages, max_tokens,
+                               temperature, extras),
         )
         resp.raise_for_status()
         data = resp.json()
-        return (data["choices"][0]["message"]["content"],
-                data.get("usage") or dict(_EMPTY_USAGE))
+        choix = (data.get("choices") or [{}])[0]
+        message = choix.get("message") or {"role": "assistant", "content": ""}
+        usage = data.get("usage") or dict(_EMPTY_USAGE)
+        return {**message, "_finish_reason": choix.get("finish_reason")}, usage
 
 
 def _sse_payloads(line: str) -> dict | None:
@@ -127,10 +299,12 @@ def _sse_payloads(line: str) -> dict | None:
 
 
 async def _stream_v1(provider: str, model: str, messages: list[dict],
-                     max_tokens: int, temperature: float | None = None):
-    """Flux natif du fournisseur : produit des `(texte, finish, usage)`
-    au fur et à mesure. Le texte est encore tokenisé — la restauration
-    se fait en aval, incrémentalement."""
+                     max_tokens: int, temperature: float | None = None,
+                     extras: dict | None = None):
+    """Flux natif du fournisseur : produit des `(delta, finish, usage)`.
+    `delta` est l'objet delta complet — il peut porter du texte ou des
+    fragments d'appel d'outil. Le contenu est encore tokenisé ; la
+    restauration se fait en aval, incrémentalement."""
     api_key = _provider_key(provider)
 
     if provider == "anthropic":
@@ -138,19 +312,12 @@ async def _stream_v1(provider: str, model: str, messages: list[dict],
         headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
     else:
         headers = {"Authorization": f"Bearer {api_key}"}
-        if provider == "mistral":
-            url = f"{settings.mistral_base}/v1/chat/completions"
-        elif provider == "groq":
-            url = f"{settings.groq_base}/openai/v1/chat/completions"
-        else:
-            url = f"{settings.openai_base}/v1/chat/completions"
+        url = _url_fournisseur(provider)
 
-    payload = {"model": model, "max_tokens": max_tokens,
-               "messages": messages, "stream": True}
-    if temperature is not None:
-        payload["temperature"] = temperature
+    payload = _charge_utile(provider, model, messages, max_tokens,
+                            temperature, extras)
+    payload["stream"] = True
     if provider != "anthropic":
-        # Demande le décompte de jetons en fin de flux (ignoré si non géré).
         payload["stream_options"] = {"include_usage": True}
 
     usage = dict(_EMPTY_USAGE)
@@ -166,9 +333,9 @@ async def _stream_v1(provider: str, model: str, messages: list[dict],
                 if provider == "anthropic":
                     kind = data.get("type")
                     if kind == "content_block_delta":
-                        text = data.get("delta", {}).get("text", "")
-                        if text:
-                            yield text, None, None
+                        texte = data.get("delta", {}).get("text", "")
+                        if texte:
+                            yield {"content": texte}, None, None
                     elif kind == "message_start":
                         u = data.get("message", {}).get("usage", {})
                         usage["prompt_tokens"] = u.get("input_tokens", 0)
@@ -177,23 +344,30 @@ async def _stream_v1(provider: str, model: str, messages: list[dict],
                         usage["completion_tokens"] = u.get("output_tokens", 0)
                         usage["total_tokens"] = (usage["prompt_tokens"]
                                                  + usage["completion_tokens"])
-                        yield "", data.get("delta", {}).get("stop_reason"), None
+                        yield {}, data.get("delta", {}).get("stop_reason"), None
                     continue
 
                 if data.get("usage"):
                     usage = data["usage"]
-                for choice in data.get("choices", []):
-                    text = (choice.get("delta") or {}).get("content") or ""
-                    finish = choice.get("finish_reason")
-                    if text or finish:
-                        yield text, finish, None
+                for choix in data.get("choices", []):
+                    delta = choix.get("delta") or {}
+                    finish = choix.get("finish_reason")
+                    if delta or finish:
+                        yield delta, finish, None
 
-    yield "", None, usage      # dernier événement : décompte de jetons
+    yield {}, None, usage      # dernier événement : décompte de jetons
 
 
-def _openai_response(model: str, content: str, finish_reason: str = "stop",
+# ============================================================
+# Réponses au format OpenAI
+# ============================================================
+
+def _openai_response(model: str, message: dict, finish_reason: str = "stop",
                      usage: dict | None = None) -> dict:
-    """Enveloppe une reponse texte au format ChatCompletion standard OpenAI."""
+    """Enveloppe un message au format ChatCompletion standard."""
+    propre = {k: v for k, v in message.items() if not k.startswith("_")}
+    propre.setdefault("role", "assistant")
+    propre.setdefault("content", None)
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
         "object": "chat.completion",
@@ -201,44 +375,11 @@ def _openai_response(model: str, content: str, finish_reason: str = "stop",
         "model": model,
         "choices": [{
             "index": 0,
-            "message": {"role": "assistant", "content": content},
+            "message": propre,
             "finish_reason": finish_reason,
         }],
         "usage": usage or dict(_EMPTY_USAGE),
     }
-
-
-def _sse_response(model: str, content: str, finish_reason: str = "stop",
-                  usage: dict | None = None) -> StreamingResponse:
-    """Streaming simule : la reponse est deja complete et desanonymisee,
-    elle est renvoyee en chunks SSE au format ChatCompletion. Garantit
-    qu'aucun token FPE ne peut etre coupe en deux par le decoupage, tout
-    en restant compatible avec les clients OpenAI qui exigent stream=true."""
-    resp_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
-    created = int(time.time())
-
-    def chunk(delta: dict, finish: str | None = None) -> str:
-        return "data: " + json.dumps({
-            "id": resp_id, "object": "chat.completion.chunk",
-            "created": created, "model": model,
-            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
-        }, ensure_ascii=False) + "\n\n"
-
-    async def gen():
-        yield chunk({"role": "assistant", "content": ""})
-        step = 48
-        for i in range(0, len(content), step):
-            yield chunk({"content": content[i:i + step]})
-        yield chunk({}, finish=finish_reason)
-        if usage:
-            yield "data: " + json.dumps({
-                "id": resp_id, "object": "chat.completion.chunk",
-                "created": created, "model": model,
-                "choices": [], "usage": usage,
-            }, ensure_ascii=False) + "\n\n"
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 def _chunk_line(resp_id: str, created: int, model: str,
@@ -250,46 +391,112 @@ def _chunk_line(resp_id: str, created: int, model: str,
     }, ensure_ascii=False) + "\n\n"
 
 
-async def _native_stream_response(provider: str, model: str,
-                                  messages: list[dict], max_tokens: int,
-                                  temperature: float | None,
-                                  client_id: str) -> StreamingResponse:
-    """Streaming natif : les fragments du fournisseur sont désanonymisés
-    au vol et réémis immédiatement. L'employé voit la réponse se former,
-    avec ses vraies valeurs, sans attendre la fin."""
-    detok = await fpe.make_incremental_detokenizer(client_id)
+def _sse_response(model: str, content: str, finish_reason: str = "stop",
+                  usage: dict | None = None) -> StreamingResponse:
+    """Streaming simulé : la réponse est déjà complète et désanonymisée,
+    elle est renvoyée en chunks SSE. Utilisé pour les refus et quand
+    STREAM_NATIVE est désactivé."""
     resp_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(time.time())
 
     async def gen():
-        yield _chunk_line(resp_id, created, model, {"role": "assistant",
-                                                    "content": ""})
+        yield _chunk_line(resp_id, created, model,
+                          {"role": "assistant", "content": ""})
+        step = 48
+        for i in range(0, len(content), step):
+            yield _chunk_line(resp_id, created, model,
+                              {"content": content[i:i + step]})
+        yield _chunk_line(resp_id, created, model, {}, finish=finish_reason)
+        if usage:
+            yield "data: " + json.dumps({
+                "id": resp_id, "object": "chat.completion.chunk",
+                "created": created, "model": model,
+                "choices": [], "usage": usage,
+            }, ensure_ascii=False) + "\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+async def _native_stream_response(provider: str, model: str,
+                                  messages: list[dict], max_tokens: int,
+                                  temperature: float | None,
+                                  client_id: str,
+                                  extras: dict | None = None) -> StreamingResponse:
+    """Streaming natif : les fragments du fournisseur sont désanonymisés
+    au vol et réémis immédiatement.
+
+    Les arguments d'appel d'outil arrivent eux aussi en fragments : ils
+    reçoivent chacun leur propre désanonymiseur incrémental, sans quoi un
+    jeton coupé entre deux fragments passerait au travers."""
+    detok_texte = await fpe.make_incremental_detokenizer(client_id)
+    detok_outils: dict[int, object] = {}
+    resp_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+    created = int(time.time())
+
+    async def _restaurer_delta(delta: dict) -> dict:
+        sortie = dict(delta)
+        if isinstance(sortie.get("content"), str) and sortie["content"]:
+            sortie["content"] = detok_texte.feed(sortie["content"])
+        appels = sortie.get("tool_calls")
+        if isinstance(appels, list):
+            restaures = []
+            for appel in appels:
+                fonction = appel.get("function") if isinstance(appel, dict) else None
+                if isinstance(fonction, dict) and isinstance(
+                        fonction.get("arguments"), str):
+                    idx = appel.get("index", 0)
+                    if idx not in detok_outils:
+                        detok_outils[idx] = \
+                            await fpe.make_incremental_detokenizer(client_id)
+                    restaures.append({**appel, "function": {
+                        **fonction,
+                        "arguments": detok_outils[idx].feed(fonction["arguments"])}})
+                else:
+                    restaures.append(appel)
+            sortie["tool_calls"] = restaures
+        return sortie
+
+    def _reste() -> list[dict]:
+        """Vide toutes les retenues en fin de flux."""
+        deltas = []
+        fin_texte = detok_texte.flush()
+        if fin_texte:
+            deltas.append({"content": fin_texte})
+        for idx, detok in detok_outils.items():
+            reste = detok.flush()
+            if reste:
+                deltas.append({"tool_calls": [
+                    {"index": idx, "function": {"arguments": reste}}]})
+        return deltas
+
+    async def gen():
+        yield _chunk_line(resp_id, created, model,
+                          {"role": "assistant", "content": ""})
         finish_reason = "stop"
         usage = dict(_EMPTY_USAGE)
         try:
-            async for text, finish, final_usage in _stream_v1(
-                    provider, model, messages, max_tokens, temperature):
+            async for delta, finish, final_usage in _stream_v1(
+                    provider, model, messages, max_tokens, temperature, extras):
                 if final_usage:
                     usage = final_usage
                 if finish:
                     finish_reason = finish
-                if text:
-                    emit = detok.feed(text)
-                    if emit:
-                        yield _chunk_line(resp_id, created, model,
-                                          {"content": emit})
-            tail = detok.flush()
-            if tail:
-                yield _chunk_line(resp_id, created, model, {"content": tail})
+                if not delta:
+                    continue
+                restaure = await _restaurer_delta(delta)
+                if any(restaure.get(k) for k in ("content", "tool_calls")):
+                    yield _chunk_line(resp_id, created, model, restaure)
+            for reste in _reste():
+                yield _chunk_line(resp_id, created, model, reste)
         except Exception as e:
             # Le flux a déjà commencé : on ne peut plus renvoyer un code
             # HTTP d'erreur, on le signale dans le flux lui-même.
             _log.warning("flux fournisseur interrompu", extra={
                 "event": "upstream_stream_error", "provider": provider,
                 "error": f"{type(e).__name__}: {e}"})
-            tail = detok.flush()
-            if tail:
-                yield _chunk_line(resp_id, created, model, {"content": tail})
+            for reste in _reste():
+                yield _chunk_line(resp_id, created, model, reste)
             yield _chunk_line(resp_id, created, model, {}, finish="error")
             yield "data: [DONE]\n\n"
             return
@@ -308,38 +515,46 @@ async def _native_stream_response(provider: str, model: str,
 @router.post("/v1/chat/completions")
 async def chat_completions(req: ChatCompletionRequest,
                            client_id: str = Depends(auth.verify_bearer_key)):
-    """Endpoint compatible OpenAI : n'importe quel SDK/outil configure avec
-    base_url=http://<sentinel>:8000/v1 et une cle sntl_... passe
-    automatiquement par le pipeline de scan/audit SENTINEL avant d'atteindre
-    le vrai fournisseur, determine depuis le nom du modele. Tous les roles
-    (system, user, assistant) sont assainis, et la reponse est
-    desanonymisee avant retour — y compris en stream."""
+    """Endpoint compatible OpenAI. Tous les rôles sont assainis, tous les
+    champs porteurs de texte aussi (contenu, parties multimodales,
+    arguments d'outil, descriptions d'outil), et tous les champs inconnus
+    sont relayés au fournisseur plutôt qu'abandonnés en silence."""
     provider = _route_provider(req.model)
-    clean_messages = []
+    extras = {k: v for k, v in req.model_dump(exclude_unset=True).items()
+              if k not in _CHAMPS_INTERNES}
 
+    clean_messages = []
     for msg in req.messages:
-        if msg.content:
-            sanitized, decisions, blocked = await _sanitize(msg.content, client_id)
-            if blocked:
-                refusal = ("Requete bloquee par SENTINEL : "
-                           "contenu confidentiel detecte.")
-                if req.stream:
-                    return _sse_response(req.model, refusal,
-                                         finish_reason="content_filter")
-                return _openai_response(req.model, refusal,
-                                        finish_reason="content_filter")
-            clean_messages.append({"role": msg.role, "content": sanitized})
-        else:
-            clean_messages.append({"role": msg.role, "content": msg.content})
+        propre, bloque = await _assainir_message(
+            msg.model_dump(exclude_none=False), client_id)
+        if bloque:
+            refus = ("Requete bloquee par SENTINEL : "
+                     "contenu confidentiel detecte.")
+            if req.stream:
+                return _sse_response(req.model, refus,
+                                     finish_reason="content_filter")
+            return _openai_response(req.model,
+                                    {"role": "assistant", "content": refus},
+                                    finish_reason="content_filter")
+        clean_messages.append(propre)
+
+    if extras.get("tools"):
+        extras["tools"], bloque = await _assainir_outils(extras["tools"], client_id)
+        if bloque:
+            refus = "Requete bloquee par SENTINEL : contenu confidentiel detecte."
+            return _openai_response(req.model,
+                                    {"role": "assistant", "content": refus},
+                                    finish_reason="content_filter")
 
     if req.stream and settings.stream_native:
         return await _native_stream_response(provider, req.model,
                                              clean_messages, req.max_tokens,
-                                             req.temperature, client_id)
+                                             req.temperature, client_id, extras)
 
     try:
-        answer, usage = await _forward_v1(provider, req.model, clean_messages,
-                                          req.max_tokens, req.temperature)
+        message, usage = await _forward_v1(provider, req.model, clean_messages,
+                                           req.max_tokens, req.temperature,
+                                           extras)
     except httpx.HTTPStatusError as e:
         raise HTTPException(
             status_code=e.response.status_code,
@@ -353,8 +568,11 @@ async def chat_completions(req: ChatCompletionRequest,
             detail={"error": {"message": f"Fournisseur {provider} injoignable : {type(e).__name__}",
                               "type": "upstream_unreachable"}})
 
-    final_answer = await fpe.detokenize_async(answer, client_id)
+    finish = message.pop("_finish_reason", None) or "stop"
+    restaure = await _restaurer_message(message, client_id)
 
     if req.stream:
-        return _sse_response(req.model, final_answer, usage=usage)
-    return _openai_response(req.model, final_answer, usage=usage)
+        return _sse_response(req.model, restaure.get("content") or "",
+                             finish_reason=finish, usage=usage)
+    return _openai_response(req.model, restaure, finish_reason=finish,
+                            usage=usage)
