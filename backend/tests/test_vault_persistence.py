@@ -24,9 +24,9 @@ class _FakeCon:
 
     async def execute(self, query: str, *args):
         if "INSERT INTO vault" in query:
-            token, cipher, etype, expires = args
-            self.store[token] = {"cipher": cipher, "entity_type": etype,
-                                 "expired": False}
+            client_id, token, cipher, etype, expires = args
+            self.store[token] = {"client_id": client_id, "cipher": cipher,
+                                 "entity_type": etype, "expired": False}
             return "INSERT 0 1"
         if "DELETE FROM vault" in query:
             expired = [t for t, r in self.store.items() if r["expired"]]
@@ -37,10 +37,12 @@ class _FakeCon:
 
     async def fetch(self, query: str, *args):
         if "SELECT token, cipher, entity_type FROM vault" in query:
-            # La requete filtre sur expires_at > now()
+            # La requete filtre sur client_id ET expires_at > now()
+            client_id = args[0] if args else None
             return [{"token": t, "cipher": r["cipher"],
                      "entity_type": r["entity_type"]}
-                    for t, r in self.store.items() if not r["expired"]]
+                    for t, r in self.store.items()
+                    if not r["expired"] and r.get("client_id") == client_id]
         return []
 
     async def fetchrow(self, query: str, *args):

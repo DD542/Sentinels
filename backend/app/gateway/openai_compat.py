@@ -252,11 +252,12 @@ def _chunk_line(resp_id: str, created: int, model: str,
 
 async def _native_stream_response(provider: str, model: str,
                                   messages: list[dict], max_tokens: int,
-                                  temperature: float | None) -> StreamingResponse:
+                                  temperature: float | None,
+                                  client_id: str) -> StreamingResponse:
     """Streaming natif : les fragments du fournisseur sont désanonymisés
     au vol et réémis immédiatement. L'employé voit la réponse se former,
     avec ses vraies valeurs, sans attendre la fin."""
-    detok = await fpe.make_incremental_detokenizer()
+    detok = await fpe.make_incremental_detokenizer(client_id)
     resp_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(time.time())
 
@@ -334,7 +335,7 @@ async def chat_completions(req: ChatCompletionRequest,
     if req.stream and settings.stream_native:
         return await _native_stream_response(provider, req.model,
                                              clean_messages, req.max_tokens,
-                                             req.temperature)
+                                             req.temperature, client_id)
 
     try:
         answer, usage = await _forward_v1(provider, req.model, clean_messages,
@@ -352,7 +353,7 @@ async def chat_completions(req: ChatCompletionRequest,
             detail={"error": {"message": f"Fournisseur {provider} injoignable : {type(e).__name__}",
                               "type": "upstream_unreachable"}})
 
-    final_answer = await fpe.detokenize_async(answer)
+    final_answer = await fpe.detokenize_async(answer, client_id)
 
     if req.stream:
         return _sse_response(req.model, final_answer, usage=usage)

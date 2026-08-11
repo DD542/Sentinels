@@ -66,7 +66,7 @@ async def _sanitize(text: str, client_id: str) -> tuple[str, list[dict], bool]:
         if action == Action.BLOCK:
             sanitized = sanitized[:f.start] + "[BLOCKED]" + sanitized[f.end:]
         elif action == Action.TOKENIZE:
-            token = await fpe.tokenize_async(f.value, f.entity_type)
+            token = await fpe.tokenize_async(f.value, f.entity_type, client_id)
             sanitized = sanitized[:f.start] + token + sanitized[f.end:]
         entry = await chain.append_async(
             action.value, f.entity_type.value,
@@ -171,7 +171,7 @@ async def chat(req: ChatRequest,
         return {"blocked": False,
                 "error": f"Fournisseur injoignable : {type(e).__name__}"}
 
-    final_answer = await fpe.detokenize_async(raw_answer)
+    final_answer = await fpe.detokenize_async(raw_answer, client_id)
 
     return {
         "blocked": False,

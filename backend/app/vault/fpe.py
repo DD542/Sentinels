@@ -12,12 +12,69 @@ from .. import db
 settings = get_settings()
 _KEY = bytes.fromhex(settings.vault_master_key)
 
-_REVERSE_MAP: dict[str, tuple[str, EntityType]] = {}
+# Client par défaut (usage hors passerelle, tests, outils).
+DEFAULT_CLIENT = "_global"
 
-_FAKE_MALE = ["Marc", "Paul", "Hugo", "Louis", "Victor", "Simon", "Denis"]
-_FAKE_FEMALE = ["Julie", "Claire", "Lea", "Nadia", "Anne", "Sophie", "Manon"]
-_FAKE_LAST = ["Legrand", "Moreau", "Dubois", "Girard", "Renard", "Faure", "Blanc"]
-_FAKE_CITIES = ["Beaulieu", "Montvert", "Rocheval", "Clairfont", "Valbonne"]
+# Vault CLOISONNÉ PAR CLIENT : client_id -> {jeton -> (valeur, type)}.
+#
+# Un vault partagé faisait fuiter les données d'un client chez un autre :
+# la réponse d'un fournisseur destinée au client B, contenant par hasard
+# un jeton du client A, se voyait restaurer avec la VRAIE valeur de A.
+# Dans un outil de protection des données, c'est le pire défaut possible.
+_REVERSE_MAP: dict[str, dict[str, tuple[str, EntityType]]] = {}
+
+# Espace des substituts. Il doit être VASTE : deux valeurs distinctes qui
+# reçoivent le même jeton se corrompent mutuellement (le vault ne retient
+# que la dernière) et fuitent l'une chez l'autre. Avec 7x7 prénoms et
+# 7 noms — 98 combinaisons — on mesurait 3 collisions sur 20 personnes.
+_FAKE_MALE = [
+    "Marc", "Paul", "Hugo", "Louis", "Victor", "Simon", "Denis", "Bastien",
+    "Cyprien", "Damien", "Edgar", "Fabien", "Gaspard", "Hadrien", "Ivan",
+    "Joachim", "Killian", "Lorenzo", "Matheo", "Noe", "Octave", "Quentin",
+    "Raphael", "Sacha", "Tristan", "Ulysse", "Valentin", "Wilfried", "Xavier",
+    "Yanis", "Zacharie", "Amaury", "Brice", "Come", "Diego", "Elias",
+    "Ferdinand", "Gaetan", "Hector", "Isidore", "Jocelyn", "Kilian", "Leandre",
+    "Martial", "Nathanael", "Olivier", "Pacome", "Regis", "Sylvain", "Timothee",
+    "Urbain", "Vianney", "Wladimir", "Yohan", "Zephyr", "Aurelien", "Bertrand",
+    "Clovis", "Dorian", "Emerick", "Firmin", "Gontran", "Hilaire", "Ignace",
+]
+_FAKE_FEMALE = [
+    "Julie", "Claire", "Lea", "Nadia", "Anne", "Sophie", "Manon", "Beatrice",
+    "Capucine", "Delphine", "Eleonore", "Fanny", "Garance", "Heloise", "Iris",
+    "Joanne", "Kahina", "Louise", "Margaux", "Noemie", "Ombeline", "Prune",
+    "Rosalie", "Solene", "Tiphaine", "Ursule", "Violette", "Wendy", "Xaviere",
+    "Yasmine", "Zoe", "Ariane", "Blandine", "Clemence", "Domitille", "Elsa",
+    "Flavie", "Gwenaelle", "Hortense", "Ines", "Jeanne", "Katia", "Lucile",
+    "Maelys", "Nine", "Orianne", "Peggy", "Roxane", "Sidonie", "Thais",
+    "Ulrike", "Valentine", "Wanda", "Ysaline", "Zelie", "Apolline", "Berenice",
+    "Coline", "Douceline", "Eugenie", "Faustine", "Gaelle", "Honorine", "Irma",
+]
+_FAKE_LAST = [
+    "Legrand", "Moreau", "Dubois", "Girard", "Renard", "Faure", "Blanc",
+    "Arnaud", "Berger", "Chevalier", "Dupuis", "Etienne", "Fontaine", "Gauthier",
+    "Herve", "Imbert", "Jacquet", "Klein", "Lemoine", "Marchand", "Noel",
+    "Ollivier", "Perrot", "Quesnel", "Rivoire", "Salomon", "Texier", "Ughetto",
+    "Vasseur", "Weber", "Ximenes", "Yvon", "Zeller", "Aubert", "Bonnet",
+    "Colin", "Delaunay", "Evrard", "Ferrand", "Gilbert", "Huet", "Isnard",
+    "Joubert", "Kessler", "Lacroix", "Mallet", "Navarro", "Ozanne", "Peltier",
+    "Quintin", "Rossignol", "Sauvage", "Thibault", "Urbain", "Verdier", "Wagner",
+    "Xavier", "Yvard", "Zimmer", "Alliot", "Baudry", "Cartier", "Doucet",
+    "Esteve", "Flamand", "Grangier", "Hamon", "Ivanoff", "Jourdain", "Kervella",
+    "Lanvin", "Mounier", "Neveu", "Orsini", "Pasquier", "Rambaud", "Sorel",
+    "Turpin", "Vaillant", "Wibaux", "Yzerman", "Zamora",
+]
+_FAKE_CITIES = [
+    "Beaulieu", "Montvert", "Rocheval", "Clairfont", "Valbonne", "Aubercourt",
+    "Bellerive", "Chandreuil", "Doncelles", "Ecuvillon", "Fontenoy", "Grandpre",
+    "Hautrive", "Ivrezel", "Joncherey", "Larmont", "Maussac", "Noireval",
+    "Ormessan", "Pierrelac", "Quintenas", "Roquebrune", "Sauveterre", "Tourmens",
+    "Ussanges", "Vaucresson", "Wancourt", "Yvrandes", "Zellenberg", "Argenteil",
+    "Brumecourt", "Chastelier", "Douvrenne", "Estampes", "Framboisy", "Gouvieux",
+]
+
+# Un jeton en collision corrompt DEUX valeurs : on redérive tant que le
+# jeton est déjà pris par une autre valeur du même client.
+_MAX_TENTATIVES = 64
 
 _MALE_NAMES = {
     "jean", "pierre", "michel", "alain", "philippe", "nicolas", "christophe",
@@ -57,8 +114,8 @@ def _norm(s: str) -> str:
     return re.sub(r"[\s\u00A0.\-]", "", s).upper()
 
 
-def _fake_iban(original: str) -> str:
-    stream = _prf(original)
+def _fake_iban(original: str, tentative: int = 0) -> str:
+    stream = _prf(original, f"i{tentative}")
     out, alnum_idx = [], 0
     for ch in original:
         if ch.isalnum():
@@ -90,8 +147,13 @@ def _fake_iban(original: str) -> str:
     return "".join(result)
 
 
-def _fake_digits(original: str) -> str:
-    out, stream = [], _prf(original)
+def _client_map(client_id: str) -> dict[str, tuple[str, EntityType]]:
+    """Vault d'un client. Aucun autre client n'y a accès."""
+    return _REVERSE_MAP.setdefault(client_id, {})
+
+
+def _fake_digits(original: str, tentative: int = 0) -> str:
+    out, stream = [], _prf(original, f"d{tentative}")
     for ch in original:
         if ch.isdigit():
             out.append(str(stream % 10)); stream //= 10
@@ -101,8 +163,8 @@ def _fake_digits(original: str) -> str:
     return "".join(out)
 
 
-def _fake_person(original: str) -> str:
-    seed = _prf(original)
+def _fake_person(original: str, tentative: int = 0) -> str:
+    seed = _prf(original, f"p{tentative}")
     first_word = original.strip().split()[0].lower() if original.strip() else ""
     if first_word in _FEMALE_NAMES:
         pool = _FAKE_FEMALE
@@ -113,38 +175,62 @@ def _fake_person(original: str) -> str:
     return f"{pool[seed % len(pool)]} {_FAKE_LAST[(seed // 7) % len(_FAKE_LAST)]}"
 
 
-def _make_token(value: str, etype: EntityType) -> str:
-    seed = _prf(value)
+def _deriver(value: str, etype: EntityType, tentative: int) -> str:
+    seed = _prf(value, f"t{tentative}")
     if etype == EntityType.IBAN:
-        return _fake_iban(value)
+        return _fake_iban(value, tentative)
     if etype == EntityType.PERSON:
-        return _fake_person(value)
+        return _fake_person(value, tentative)
     if etype == EntityType.EMAIL:
         return (f"{_FAKE_MALE[seed % len(_FAKE_MALE)].lower()}."
                 f"{_FAKE_LAST[(seed // 3) % len(_FAKE_LAST)].lower()}@exemple.fr")
     if etype == EntityType.LOCATION:
         return _FAKE_CITIES[seed % len(_FAKE_CITIES)]
-    return _fake_digits(value)
+    return _fake_digits(value, tentative)
 
 
-def tokenize(value: str, etype: EntityType) -> str:
-    token = _make_token(value, etype)
-    _REVERSE_MAP[token] = (value, etype)
+def _make_token(value: str, etype: EntityType,
+                client_id: str = DEFAULT_CLIENT) -> str:
+    """Substitut du client, garanti sans collision dans SON vault.
+
+    La dérivation reste déterministe — la même valeur donne le même
+    jeton — mais si ce jeton est déjà pris par une AUTRE valeur, on
+    redérive. Sans cette boucle, deux personnes distinctes recevaient le
+    même substitut : le vault ne gardait que la dernière, et la première
+    se voyait restaurer avec la donnée de la seconde."""
+    vault = _client_map(client_id)
+    for tentative in range(_MAX_TENTATIVES):
+        token = _deriver(value, etype, tentative)
+        occupant = vault.get(token)
+        if occupant is None or occupant[0] == value:
+            return token
+    # Espace saturé pour ce client : on discrimine par un suffixe stable
+    # plutôt que d'accepter une collision.
+    return f"{_deriver(value, etype, 0)} {_prf(value, 'suffixe') % 1000:03d}"
+
+
+def tokenize(value: str, etype: EntityType,
+             client_id: str = DEFAULT_CLIENT) -> str:
+    token = _make_token(value, etype, client_id)
+    _client_map(client_id)[token] = (value, etype)
     return token
 
 
-async def tokenize_async(value: str, etype: EntityType) -> str:
-    token = _make_token(value, etype)
-    _REVERSE_MAP[token] = (value, etype)
+async def tokenize_async(value: str, etype: EntityType,
+                         client_id: str = DEFAULT_CLIENT) -> str:
+    token = _make_token(value, etype, client_id)
+    _client_map(client_id)[token] = (value, etype)
     if db.is_enabled():
         try:
             expires = datetime.now(timezone.utc) + timedelta(hours=settings.vault_ttl_hours)
             async with db.pool().acquire() as con:
                 await con.execute(
-                    "INSERT INTO vault (token, cipher, entity_type, expires_at) "
-                    "VALUES ($1, $2, $3, $4) "
-                    "ON CONFLICT (token) DO UPDATE SET expires_at = EXCLUDED.expires_at",
-                    token, db.encrypt(value), etype.value, expires,
+                    "INSERT INTO vault "
+                    "(client_id, token, cipher, entity_type, expires_at) "
+                    "VALUES ($1, $2, $3, $4, $5) "
+                    "ON CONFLICT (client_id, token) DO UPDATE "
+                    "SET expires_at = EXCLUDED.expires_at",
+                    client_id, token, db.encrypt(value), etype.value, expires,
                 )
         except Exception as e:
             from .. import logs
@@ -161,7 +247,7 @@ async def tokenize_async(value: str, etype: EntityType) -> str:
 _DB_CANDIDATE_LIMIT = 5000
 
 
-async def _db_candidates() -> dict[str, tuple[str, EntityType]]:
+async def _db_candidates(client_id: str = DEFAULT_CLIENT) -> dict[str, tuple[str, EntityType]]:
     """Tokens encore valides en base.
 
     Indispensable : le cache mémoire est LOCAL au process. Sans cette
@@ -175,8 +261,9 @@ async def _db_candidates() -> dict[str, tuple[str, EntityType]]:
         async with db.pool().acquire() as con:
             rows = await con.fetch(
                 "SELECT token, cipher, entity_type FROM vault "
-                "WHERE expires_at > now() "
-                "ORDER BY created_at DESC LIMIT $1", _DB_CANDIDATE_LIMIT)
+                "WHERE client_id = $1 AND expires_at > now() "
+                "ORDER BY created_at DESC LIMIT $2",
+                client_id, _DB_CANDIDATE_LIMIT)
         for r in rows:
             real = db.decrypt(r["cipher"])
             if real is None:
@@ -293,11 +380,12 @@ class IncrementalDetokenizer:
         return text
 
 
-async def make_incremental_detokenizer() -> IncrementalDetokenizer:
-    """Construit un désanonymiseur de flux avec les jetons connus :
-    cache mémoire local + base (autres workers, redémarrages)."""
-    candidates = await _db_candidates()
-    candidates.update(_REVERSE_MAP)
+async def make_incremental_detokenizer(
+        client_id: str = DEFAULT_CLIENT) -> IncrementalDetokenizer:
+    """Désanonymiseur de flux pour UN client : cache mémoire local +
+    base (autres workers, redémarrages). Jamais les jetons d'un autre."""
+    candidates = await _db_candidates(client_id)
+    candidates.update(_client_map(client_id))
     return IncrementalDetokenizer(candidates)
 
 
@@ -323,13 +411,13 @@ def _fuzzy_restore(text: str, candidates: dict[str, tuple[str, EntityType]]) -> 
     return text
 
 
-def detokenize(text: str) -> str:
+def detokenize(text: str, client_id: str = DEFAULT_CLIENT) -> str:
     """Désanonymise. Trois niveaux : exact → séparateurs → fuzzy.
     Version synchrone (cache mémoire). Utilisée partout sauf en prod
     avec base de données (detokenize_async)."""
     unmatched_structured: list[tuple[str, str]] = []
 
-    for token, (real, etype) in _REVERSE_MAP.items():
+    for token, (real, etype) in _client_map(client_id).items():
         if token in text:
             text = text.replace(token, real)
             continue
@@ -362,13 +450,14 @@ def detokenize(text: str) -> str:
     return text
 
 
-async def detokenize_async(text: str) -> str:
+async def detokenize_async(text: str,
+                           client_id: str = DEFAULT_CLIENT) -> str:
     """Désanonymise en interrogeant cache mémoire ET base.
 
     Le cache local prime (il est toujours à jour) ; la base couvre les
     tokens créés par un autre process ou avant un redémarrage."""
-    candidates: dict[str, tuple[str, EntityType]] = await _db_candidates()
-    candidates.update(_REVERSE_MAP)
+    candidates: dict[str, tuple[str, EntityType]] = await _db_candidates(client_id)
+    candidates.update(_client_map(client_id))
 
     unmatched_structured: list[tuple[str, str]] = []
 

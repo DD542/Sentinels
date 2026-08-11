@@ -55,6 +55,16 @@ async def init_db() -> None:
                 );
                 CREATE INDEX IF NOT EXISTS idx_vault_expires ON vault (expires_at);
 
+                -- Cloisonnement du vault : sans lui, la reponse d'un
+                -- fournisseur destinee au client B se voyait restaurer
+                -- avec les VRAIES valeurs du client A.
+                ALTER TABLE vault
+                    ADD COLUMN IF NOT EXISTS client_id TEXT NOT NULL
+                    DEFAULT '_global';
+                ALTER TABLE vault DROP CONSTRAINT IF EXISTS vault_pkey;
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_vault_client_token
+                    ON vault (client_id, token);
+
                 CREATE TABLE IF NOT EXISTS audit_chain (
                     seq         BIGSERIAL PRIMARY KEY,
                     ts          DOUBLE PRECISION NOT NULL,

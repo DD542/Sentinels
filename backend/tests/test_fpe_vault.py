@@ -58,12 +58,12 @@ class TestFPEPerson:
     def test_masculin_remplace_par_masculin(self):
         """Régression : Jean ne doit pas devenir Anne."""
         token = tokenize("Jean Dupont", EntityType.PERSON)
-        masculine = ["Marc", "Paul", "Hugo", "Louis", "Victor", "Simon", "Denis"]
+        from app.vault.fpe import _FAKE_MALE as masculine
         assert token.split()[0] in masculine, f"Prénom masculin attendu: {token}"
 
     def test_feminin_remplace_par_feminin(self):
         token = tokenize("Marie Martin", EntityType.PERSON)
-        feminine = ["Julie", "Claire", "Lea", "Nadia", "Anne", "Sophie", "Manon"]
+        from app.vault.fpe import _FAKE_FEMALE as feminine
         assert token.split()[0] in feminine, f"Prénom féminin attendu: {token}"
 
     def test_token_person_deterministe(self):

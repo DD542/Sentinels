@@ -414,7 +414,7 @@ async def scan(req: ScanRequest,
         if action == Action.BLOCK:
             sanitized = sanitized[:f.start] + "[BLOCKED]" + sanitized[f.end:]
         elif action == Action.TOKENIZE:
-            token = await fpe.tokenize_async(f.value, f.entity_type)
+            token = await fpe.tokenize_async(f.value, f.entity_type, client_id)
             sanitized = sanitized[:f.start] + token + sanitized[f.end:]
 
         entry = await chain.append_async(

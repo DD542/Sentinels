@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/DD542/sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/DD542/sentinel/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-349%20passed-brightgreen)](https://github.com/DD542/sentinel)
+[![Tests](https://img.shields.io/badge/tests-362%20passed-brightgreen)](https://github.com/DD542/sentinel)
 [![Benchmark](https://img.shields.io/badge/detection%20F1-100%25-brightgreen)](https://github.com/DD542/sentinel)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -72,7 +72,7 @@ Benchmark sur **89 prompts étiquetés** (`backend/tests/benchmark.py`) :
 | **Global** | **100 %** | **100 %** | **100 %** |
 
 **42 prompts innocents traités sans aucun faux positif.** Latence moyenne : ~100 ms/prompt.
-Suite de tests : **349 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
+Suite de tests : **362 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
 
 > Ces chiffres portent sur le jeu de test fourni, qui couvre les formats structurés, l'obfuscation (base64, hexadécimal, espacement) et les tentatives d'évasion. Ils ne constituent pas une garantie de détection exhaustive — voir [Limites connues](#limites-connues).
 
@@ -110,6 +110,8 @@ python tests/benchmark_external.py --rows 1000 --json
 **Juge local pour le texte libre.** Là où la reconnaissance d'entités française plafonne (34 % de F1 sur les noms — Presidio fait pareil), un modèle de langue **exécuté en local** rattrape : rappel de 41 % à 94 % sur le benchmark externe. Désactivé par défaut, activable par client — une inférence coûte mille fois le reste du pipeline. Jamais un modèle distant : on ne vérifie pas la sensibilité d'une donnée en l'envoyant à un tiers.
 
 **Détection en profondeur (5 couches).** Chaque couche dégrade proprement si indisponible. Un IBAN est validé par registre SWIFT *et* clé mod-97, une carte par Luhn, un NIR par sa clé de contrôle. Les noms passent par Presidio avec des garde-fous anti-faux-positifs (un verbe capitalisé en début de phrase n'est pas un prénom).
+
+**Vault cloisonné par client.** La table de correspondance jeton → valeur réelle est **partitionnée par organisation** : la réponse d'un fournisseur destinée à un client ne peut jamais être restaurée avec les données d'un autre. Vérifié en mémoire et via la base.
 
 **Tokenisation à format préservé (FPE).** Un IBAN réel devient un IBAN factice **structurellement valide** — clé mod-97 recalculée, format et espacement conservés. `Jean Dupont` devient `Hugo Blanc` : faux, mais **du bon genre**, pour que l'IA ne réponde pas « Madame Jean Dupont ».
 
@@ -366,7 +368,7 @@ La CI GitHub Actions rejoue l'intégralité des tests et du benchmark sur Python
 - **Récupération floue en streaming.** Le streaming natif restaure les jetons par correspondance exacte et tolérante aux séparateurs, mais **pas** par récupération floue : celle-ci a besoin du texte complet, or on ne peut pas reprendre un texte déjà émis. Un jeton fortement corrompu par le modèle peut donc rester factice en streaming. Le mode `STREAM_NATIVE=false` rétablit la restauration à trois niveaux, au prix de l'attente de la réponse complète.
 - **Langue.** La détection L2 est **multilingue** : le français passe par Presidio (qualité + garde-fous), l'anglais par un modèle dédié, et toute autre langue par un modèle multilingue (~100 langues, noms et lieux). La détection de langue est automatique. La couche L3 (corpus confidentiel) reste, elle, calibrée pour le français.
 - **Récupération floue.** Si une réponse contient plusieurs IBAN très proches du token corrompu, la restauration pourrait viser la mauvaise cible. Le seuil de similarité et le filtre pays limitent fortement ce cas, sans l'éliminer.
-- **Collisions FPE.** Théoriquement possibles, en pratique négligeables avec HMAC-SHA256.
+- **Collisions FPE.** Deux valeurs distinctes ne peuvent plus recevoir le même substitut : la dérivation est redérivée tant que le jeton est déjà pris dans le vault du client. Vérifié à 0 collision sur 2 000 personnes. *(Auparavant, l'espace des substituts faisait 98 combinaisons et produisait 3 collisions sur 20 personnes — une collision corrompait les deux valeurs.)*
 
 Ces limites sont documentées **parce qu'elles existent dans toutes les solutions du marché**, y compris celles qui ne les affichent pas.
 
@@ -410,6 +412,7 @@ Ces limites sont documentées **parce qu'elles existent dans toutes les solution
 - [x] **SSO d'entreprise OIDC** (PKCE, JWKS, restriction par domaine/groupe, session chiffrée) : connexions nominatives scellées dans l'audit
 - [x] **Révocation de session** (session, compte ou globale) : un cookie volé cesse d'être valable, la déconnexion tue réellement la session
 - [x] **Images signées** (cosign sans clé) avec **provenance SLSA** et **SBOM attesté** : un client peut vérifier l'origine avant de déployer
+- [x] **Vault cloisonné par client** + **unicité des jetons garantie** (0 collision sur 2 000 personnes) : deux défauts trouvés par preuve de concept, corrigés et verrouillés par tests
 - [x] **Juge local pour le rappel sur texte libre** (`deep_scan` par client) : rappel PERSON de 41 % à 94 %, F1 de 44 % à 76 %, entités hallucinées rejetées, dégradation propre sans Ollama
 - [x] **Chaîne d'audit cloisonnée par client** : une chaîne par organisation, vérifiable et exportable indépendamment — indispensable en SaaS mutualisé
 - [x] **Console d'administration + rôles** (administrateur / auditeur / observateur, groupes OIDC) : opérations à l'interface, permissions vérifiées côté serveur
@@ -455,7 +458,7 @@ Benchmark over **89 labelled prompts** (`backend/tests/benchmark.py`):
 | **Overall** | **100%** | **100%** | **100%** |
 
 **42 innocent prompts processed with zero false positives.** Average latency: ~100 ms/prompt.
-Test suite: **349 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
+Test suite: **362 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
 
 > These figures cover the provided test set (structured formats, base64/hex/spacing obfuscation, evasion attempts). They are not a guarantee of exhaustive detection — see [Known limitations](#known-limitations).
 
@@ -648,6 +651,7 @@ These limitations are documented **because they exist in every solution on the m
 - [x] **Enterprise OIDC SSO** (PKCE, JWKS, domain/group restriction, encrypted session): named logins sealed in the audit chain
 - [x] **Session revocation** (session, account or global): a stolen cookie stops working, logout actually kills the session
 - [x] **Signed images** (keyless cosign) with **SLSA provenance** and **attested SBOM**: customers can verify provenance before deploying
+- [x] **Per-client vault partitioning** + **guaranteed token uniqueness** (0 collisions over 2,000 people): two defects found by proof of concept, fixed and locked by tests
 - [x] **Local LLM judge for free-text recall** (per-client `deep_scan`): PERSON recall 41 % → 94 %, F1 44 % → 76 %, hallucinated entities rejected, graceful degradation without Ollama
 - [x] **Per-tenant audit chain**: one chain per organisation, independently verifiable and exportable — a prerequisite for multi-tenant SaaS
 - [x] **Admin console + roles** (admin / auditor / viewer, mapped from OIDC groups): operations from the UI, permissions enforced server-side
