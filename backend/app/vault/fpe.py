@@ -220,6 +220,87 @@ async def purge_expired() -> int:
         return 0
 
 
+class IncrementalDetokenizer:
+    """Désanonymisation au fil de l'eau, pour le streaming.
+
+    Le problème : un jeton FPE peut être **coupé entre deux chunks**
+    (« FR2473 » puis « 620249543… »). Remplacer chunk par chunk le
+    manquerait et l'employé recevrait la valeur factice.
+
+    La solution : une fenêtre de retenue. On accumule le texte, on
+    désanonymise l'ensemble, puis on n'émet que ce qui ne peut plus
+    faire partie d'un jeton en cours d'arrivée — c'est-à-dire tout sauf
+    les `keep` derniers caractères. Un jeton incomplet est forcément un
+    suffixe plus court que le plus long jeton connu : il reste donc
+    entièrement dans la retenue jusqu'à être complet.
+
+    Compromis assumé : la **récupération floue** (jeton corrompu par le
+    modèle) n'opère pas en streaming — elle a besoin du texte entier, et
+    on ne peut pas reprendre un texte déjà émis. Les correspondances
+    exacte et tolérante aux séparateurs, elles, fonctionnent."""
+
+    # Marge au-delà du plus long jeton : le modèle peut insérer des
+    # séparateurs (« FR76 1010 7001 »), ce qui allonge la forme reçue.
+    _SEPARATOR_SLACK = 3
+    _MAX_KEEP = 512
+
+    def __init__(self, candidates: dict[str, tuple[str, EntityType]]):
+        self._candidates = candidates
+        self._buffer = ""
+        longest = max((len(t) for t in candidates), default=0)
+        self._keep = min(longest * self._SEPARATOR_SLACK, self._MAX_KEEP)
+
+    def feed(self, chunk: str) -> str:
+        """Absorbe un fragment ; renvoie ce qui peut être émis sans risque
+        de couper un jeton (éventuellement une chaîne vide)."""
+        if not self._candidates:
+            return chunk                     # rien à restaurer : passe-plat
+        self._buffer += chunk
+        if len(self._buffer) <= self._keep:
+            return ""
+        restored = self._restore(self._buffer)
+        if len(restored) <= self._keep:
+            self._buffer = restored
+            return ""
+        emit, self._buffer = restored[:-self._keep], restored[-self._keep:]
+        return emit
+
+    def flush(self) -> str:
+        """Vide la retenue en fin de flux, récupération floue comprise :
+        à ce stade plus rien n'arrive, le contexte est complet."""
+        if not self._buffer:
+            return ""
+        remaining = _fuzzy_restore(self._restore(self._buffer),
+                                   self._candidates)
+        self._buffer = ""
+        return remaining
+
+    def _restore(self, text: str) -> str:
+        """Niveaux 1 et 2 : correspondance exacte, puis tolérante aux
+        séparateurs. Idempotent — une valeur déjà restaurée n'est pas un
+        jeton, elle traverse les passes suivantes sans changer."""
+        for token, (real, etype) in self._candidates.items():
+            if token in text:
+                text = text.replace(token, real)
+                continue
+            if etype in _REFORMATTABLE:
+                alnum = [re.escape(c) for c in token if c.isalnum()]
+                if not alnum:
+                    continue
+                pattern = re.compile(
+                    r"[\s .\-]{0,3}".join(alnum), re.IGNORECASE)
+                text = pattern.sub(real, text)
+        return text
+
+
+async def make_incremental_detokenizer() -> IncrementalDetokenizer:
+    """Construit un désanonymiseur de flux avec les jetons connus :
+    cache mémoire local + base (autres workers, redémarrages)."""
+    candidates = await _db_candidates()
+    candidates.update(_REVERSE_MAP)
+    return IncrementalDetokenizer(candidates)
+
+
 def _fuzzy_restore(text: str, candidates: dict[str, tuple[str, EntityType]]) -> str:
     """Récupération floue : restaure les tokens corrompus par le LLM.
     Même logique que detokenize_async, factorisée pour être réutilisée

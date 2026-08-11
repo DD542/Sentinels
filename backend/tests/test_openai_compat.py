@@ -106,9 +106,12 @@ class TestOpenAICompat:
         assert fake_provider["temperature"] == 0.3
         assert resp.json()["usage"]["total_tokens"] == 19
 
-    def test_stream_sse_detokenized(self, client, api_key, fake_provider):
-        """stream=true : reponse SSE valide, terminee par [DONE], dont le
-        contenu reassemble contient la valeur restauree."""
+    def test_stream_sse_detokenized(self, client, api_key, fake_provider,
+                                    monkeypatch):
+        """Mode simule (STREAM_NATIVE=false) : reponse complete puis
+        decoupage SSE. Le streaming natif est couvert par test_streaming.py."""
+        from app.config import get_settings
+        monkeypatch.setattr(get_settings(), "stream_native", False)
         resp = client.post("/v1/chat/completions", json={
             "model": "gpt-4o",
             "stream": True,

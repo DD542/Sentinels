@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     audit_retention_days: int = 0
     # Période entre deux passes de maintenance (purges). 0 = désactivé.
     purge_interval_minutes: int = 60
+    # Streaming : "natif" relaie les fragments du fournisseur au fil de
+    # l'eau (latence minimale, désanonymisation incrémentale). False =
+    # réponse complète puis découpage simulé — restauration maximale
+    # (récupération floue comprise) mais l'utilisateur attend la fin.
+    stream_native: bool = True
     persist_audit: bool = True
     persist_vault: bool = True
     # Clés cryptographiques (32 octets hex chacune ; openssl rand -hex 32)

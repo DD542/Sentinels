@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/DD542/sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/DD542/sentinel/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-208%20passed-brightgreen)](https://github.com/DD542/sentinel)
+[![Tests](https://img.shields.io/badge/tests-222%20passed-brightgreen)](https://github.com/DD542/sentinel)
 [![Benchmark](https://img.shields.io/badge/detection%20F1-100%25-brightgreen)](https://github.com/DD542/sentinel)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -70,7 +70,7 @@ Benchmark sur **89 prompts étiquetés** (`backend/tests/benchmark.py`) :
 | **Global** | **100 %** | **100 %** | **100 %** |
 
 **42 prompts innocents traités sans aucun faux positif.** Latence moyenne : ~100 ms/prompt.
-Suite de tests : **208 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
+Suite de tests : **222 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
 
 > Ces chiffres portent sur le jeu de test fourni, qui couvre les formats structurés, l'obfuscation (base64, hexadécimal, espacement) et les tentatives d'évasion. Ils ne constituent pas une garantie de détection exhaustive — voir [Limites connues](#limites-connues).
 
@@ -288,7 +288,7 @@ La CI GitHub Actions rejoue l'intégralité des tests et du benchmark sur Python
 
 - **Données jamais apprises.** La couche L3 protège les documents que vous lui avez ingérés. Un secret inédit et non structuré (« le projet Chimère sort mardi ») passe.
 - **Chiffrement fort et stéganographie.** L0 révèle base64, hex et espacement. Une donnée réellement chiffrée reste opaque.
-- **Réponses en streaming.** Le streaming est servi en SSE simulé : la réponse est obtenue et désanonymisée en entier, puis renvoyée en chunks (compatible clients OpenAI, aucun token coupé). Le vrai streaming token-par-token du fournisseur, avec désanonymisation incrémentale, reste à venir.
+- **Récupération floue en streaming.** Le streaming natif restaure les jetons par correspondance exacte et tolérante aux séparateurs, mais **pas** par récupération floue : celle-ci a besoin du texte complet, or on ne peut pas reprendre un texte déjà émis. Un jeton fortement corrompu par le modèle peut donc rester factice en streaming. Le mode `STREAM_NATIVE=false` rétablit la restauration à trois niveaux, au prix de l'attente de la réponse complète.
 - **Langue.** La détection L2 est **multilingue** : le français passe par Presidio (qualité + garde-fous), l'anglais par un modèle dédié, et toute autre langue par un modèle multilingue (~100 langues, noms et lieux). La détection de langue est automatique. La couche L3 (corpus confidentiel) reste, elle, calibrée pour le français.
 - **Récupération floue.** Si une réponse contient plusieurs IBAN très proches du token corrompu, la restauration pourrait viser la mauvaise cible. Le seuil de similarité et le filtre pays limitent fortement ce cas, sans l'éliminer.
 - **Collisions FPE.** Théoriquement possibles, en pratique négligeables avec HMAC-SHA256.
@@ -309,7 +309,7 @@ Ces limites sont documentées **parce qu'elles existent dans toutes les solution
 - [x] Registre Shadow AI (souveraineté des fournisseurs)
 - [x] Persistance Postgres validée (clés et audit survivent aux redémarrages)
 - [x] Suite de 166 tests, dont 66 tests d'intégration API (TestClient FastAPI)
-- [x] Endpoint compatible OpenAI : tous rôles assainis, réponse désanonymisée, `stream` en SSE simulé, `usage` réel remonté
+- [x] Endpoint compatible OpenAI : tous rôles assainis, réponse désanonymisée, `usage` réel remonté
 - [x] Token admin dédié (`ADMIN_TOKEN`), comparaison en temps constant
 - [x] Révocation de clés par client (`/admin/keys/revoke`, scellée dans l'audit) et rate-limiting par client (fenêtre glissante, `RATE_LIMIT_PER_MINUTE`)
 - [x] Authentification du dashboard et du WebSocket (`DASHBOARD_TOKEN`, sous-protocole WS, écran de connexion)
@@ -330,10 +330,10 @@ Ces limites sont documentées **parce qu'elles existent dans toutes les solution
 - [x] Corpus L3 persisté (empreintes seules, jamais le texte) : la protection anti-fuite survit aux redémarrages ; retrait d'un document via `DELETE /corpus/{doc_id}`
 - [x] Durées de conservation réellement appliquées (purge périodique) : jetons du vault supprimés, clés d'audit hors rétention détruites — **les entrées d'audit, elles, sont conservées pour que la chaîne reste vérifiable**
 - [x] **Index aveugle des personnes concernées** (HMAC) : droits RGPD d'accès et d'effacement visant un individu, sans jamais stocker son identité ; l'effacement n'atteint que la personne visée
+- [x] **Streaming natif du fournisseur** : les fragments sont relayés au fil de l'eau et désanonymisés incrémentalement — une fenêtre de retenue garantit qu'un jeton coupé entre deux fragments est quand même restauré
 
 ** À venir**
 
-- [ ] Streaming natif du fournisseur (désanonymisation incrémentale)
 - [ ] Pilier 2 — **Audit AI Act** : agents RAG sur le texte réglementaire, classification de risque, rapport de conformité
 
 ### Licence
@@ -371,7 +371,7 @@ Benchmark over **89 labelled prompts** (`backend/tests/benchmark.py`):
 | **Overall** | **100%** | **100%** | **100%** |
 
 **42 innocent prompts processed with zero false positives.** Average latency: ~100 ms/prompt.
-Test suite: **208 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
+Test suite: **222 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
 
 > These figures cover the provided test set (structured formats, base64/hex/spacing obfuscation, evasion attempts). They are not a guarantee of exhaustive detection — see [Known limitations](#known-limitations).
 
@@ -509,7 +509,7 @@ CI runs the full test suite and benchmark on Python 3.11 and 3.12 on every push.
 
 - **Never-seen data.** Layer L3 protects the documents you ingested. A novel, unstructured secret slips through.
 - **Strong encryption and steganography.** L0 reveals base64, hex and spacing. Genuinely encrypted data stays opaque.
-- **Streaming responses.** Streaming is served as simulated SSE: the response is fetched and detokenised in full, then sent in chunks (OpenAI-client compatible, no token ever split). True incremental provider streaming is still to come.
+- **Fuzzy recovery while streaming.** Native streaming restores tokens by exact and separator-tolerant matching, but **not** by fuzzy recovery: that needs the complete text, and emitted text cannot be taken back. A heavily corrupted token may therefore stay fake while streaming. `STREAM_NATIVE=false` restores full three-level recovery, at the cost of waiting for the whole response.
 - **Language.** L2 detection is **multilingual**: French goes through Presidio (quality + guardrails), English through a dedicated model, and any other language through a multilingual model (~100 languages, names and locations). Language is detected automatically. Layer L3 (confidential corpus) is still tuned for French.
 - **Fuzzy recovery.** With several near-identical IBANs in one response, restoration could target the wrong one.
 
@@ -529,7 +529,7 @@ These limitations are documented **because they exist in every solution on the m
 - [x] Shadow AI registry (provider sovereignty)
 - [x] Postgres persistence validated (keys and audit survive restarts)
 - [x] 166-test suite, including 66 API integration tests (FastAPI TestClient)
-- [x] OpenAI-compatible endpoint: all roles sanitised, response detokenised, simulated SSE `stream`, real `usage` passthrough
+- [x] OpenAI-compatible endpoint: all roles sanitised, response detokenised, real `usage` passthrough
 - [x] Dedicated admin token (`ADMIN_TOKEN`), constant-time comparison
 - [x] Per-client key revocation (`/admin/keys/revoke`, sealed in the audit chain) and per-client rate limiting (sliding window, `RATE_LIMIT_PER_MINUTE`)
 - [x] Dashboard and WebSocket authentication (`DASHBOARD_TOKEN`, WS subprotocol, login screen)
@@ -550,10 +550,10 @@ These limitations are documented **because they exist in every solution on the m
 - [x] Persisted L3 corpus (fingerprints only, never the text): IP-leak protection survives restarts; remove a document via `DELETE /corpus/{doc_id}`
 - [x] Retention actually enforced (periodic purge): expired vault tokens deleted, out-of-retention audit keys destroyed — **audit entries themselves are kept so the chain stays verifiable**
 - [x] **Blind index of data subjects** (HMAC): GDPR access and erasure rights targeting an individual, without ever storing their identity; erasure affects only that person
+- [x] **Native provider streaming**: chunks are relayed as they arrive and detokenised incrementally — a hold-back window guarantees a token split across chunks is still restored
 
 ** Next**
 
-- [ ] Native provider streaming (incremental detokenisation)
 - [ ] Pillar 2 — **AI Act audit**: RAG agents over the regulation, risk classification, compliance reporting
 
 ### License

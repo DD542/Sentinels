@@ -9,11 +9,13 @@ from pydantic import BaseModel
 
 from ..config import get_settings
 from .. import auth
+from .. import logs
 from ..vault import fpe
 from .proxy import _sanitize
 
 settings = get_settings()
 router = APIRouter()
+_log = logs.get_logger("gateway")
 
 _EMPTY_USAGE = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
@@ -110,6 +112,85 @@ async def _forward_v1(provider: str, model: str, messages: list[dict],
                 data.get("usage") or dict(_EMPTY_USAGE))
 
 
+def _sse_payloads(line: str) -> dict | None:
+    """Extrait l'objet JSON d'une ligne SSE `data: {...}`. None si la
+    ligne n'en porte pas (commentaire, `[DONE]`, ligne vide)."""
+    if not line.startswith("data:"):
+        return None
+    body = line[5:].strip()
+    if not body or body == "[DONE]":
+        return None
+    try:
+        return json.loads(body)
+    except ValueError:
+        return None
+
+
+async def _stream_v1(provider: str, model: str, messages: list[dict],
+                     max_tokens: int, temperature: float | None = None):
+    """Flux natif du fournisseur : produit des `(texte, finish, usage)`
+    au fur et à mesure. Le texte est encore tokenisé — la restauration
+    se fait en aval, incrémentalement."""
+    api_key = _provider_key(provider)
+
+    if provider == "anthropic":
+        url = f"{settings.anthropic_base}/v1/messages"
+        headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+    else:
+        headers = {"Authorization": f"Bearer {api_key}"}
+        if provider == "mistral":
+            url = f"{settings.mistral_base}/v1/chat/completions"
+        elif provider == "groq":
+            url = f"{settings.groq_base}/openai/v1/chat/completions"
+        else:
+            url = f"{settings.openai_base}/v1/chat/completions"
+
+    payload = {"model": model, "max_tokens": max_tokens,
+               "messages": messages, "stream": True}
+    if temperature is not None:
+        payload["temperature"] = temperature
+    if provider != "anthropic":
+        # Demande le décompte de jetons en fin de flux (ignoré si non géré).
+        payload["stream_options"] = {"include_usage": True}
+
+    usage = dict(_EMPTY_USAGE)
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        async with client.stream("POST", url, headers=headers,
+                                 json=payload) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                data = _sse_payloads(line)
+                if data is None:
+                    continue
+
+                if provider == "anthropic":
+                    kind = data.get("type")
+                    if kind == "content_block_delta":
+                        text = data.get("delta", {}).get("text", "")
+                        if text:
+                            yield text, None, None
+                    elif kind == "message_start":
+                        u = data.get("message", {}).get("usage", {})
+                        usage["prompt_tokens"] = u.get("input_tokens", 0)
+                    elif kind == "message_delta":
+                        u = data.get("usage", {})
+                        usage["completion_tokens"] = u.get("output_tokens", 0)
+                        usage["total_tokens"] = (usage["prompt_tokens"]
+                                                 + usage["completion_tokens"])
+                        yield "", data.get("delta", {}).get("stop_reason"), None
+                    continue
+
+                if data.get("usage"):
+                    usage = data["usage"]
+                for choice in data.get("choices", []):
+                    text = (choice.get("delta") or {}).get("content") or ""
+                    finish = choice.get("finish_reason")
+                    if text or finish:
+                        yield text, finish, None
+
+    yield "", None, usage      # dernier événement : décompte de jetons
+
+
 def _openai_response(model: str, content: str, finish_reason: str = "stop",
                      usage: dict | None = None) -> dict:
     """Enveloppe une reponse texte au format ChatCompletion standard OpenAI."""
@@ -160,6 +241,69 @@ def _sse_response(model: str, content: str, finish_reason: str = "stop",
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
+def _chunk_line(resp_id: str, created: int, model: str,
+                delta: dict, finish: str | None = None) -> str:
+    return "data: " + json.dumps({
+        "id": resp_id, "object": "chat.completion.chunk",
+        "created": created, "model": model,
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+    }, ensure_ascii=False) + "\n\n"
+
+
+async def _native_stream_response(provider: str, model: str,
+                                  messages: list[dict], max_tokens: int,
+                                  temperature: float | None) -> StreamingResponse:
+    """Streaming natif : les fragments du fournisseur sont désanonymisés
+    au vol et réémis immédiatement. L'employé voit la réponse se former,
+    avec ses vraies valeurs, sans attendre la fin."""
+    detok = await fpe.make_incremental_detokenizer()
+    resp_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+    created = int(time.time())
+
+    async def gen():
+        yield _chunk_line(resp_id, created, model, {"role": "assistant",
+                                                    "content": ""})
+        finish_reason = "stop"
+        usage = dict(_EMPTY_USAGE)
+        try:
+            async for text, finish, final_usage in _stream_v1(
+                    provider, model, messages, max_tokens, temperature):
+                if final_usage:
+                    usage = final_usage
+                if finish:
+                    finish_reason = finish
+                if text:
+                    emit = detok.feed(text)
+                    if emit:
+                        yield _chunk_line(resp_id, created, model,
+                                          {"content": emit})
+            tail = detok.flush()
+            if tail:
+                yield _chunk_line(resp_id, created, model, {"content": tail})
+        except Exception as e:
+            # Le flux a déjà commencé : on ne peut plus renvoyer un code
+            # HTTP d'erreur, on le signale dans le flux lui-même.
+            _log.warning("flux fournisseur interrompu", extra={
+                "event": "upstream_stream_error", "provider": provider,
+                "error": f"{type(e).__name__}: {e}"})
+            tail = detok.flush()
+            if tail:
+                yield _chunk_line(resp_id, created, model, {"content": tail})
+            yield _chunk_line(resp_id, created, model, {}, finish="error")
+            yield "data: [DONE]\n\n"
+            return
+
+        yield _chunk_line(resp_id, created, model, {}, finish=finish_reason)
+        yield "data: " + json.dumps({
+            "id": resp_id, "object": "chat.completion.chunk",
+            "created": created, "model": model,
+            "choices": [], "usage": usage,
+        }, ensure_ascii=False) + "\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(req: ChatCompletionRequest,
                            client_id: str = Depends(auth.verify_bearer_key)):
@@ -186,6 +330,11 @@ async def chat_completions(req: ChatCompletionRequest,
             clean_messages.append({"role": msg.role, "content": sanitized})
         else:
             clean_messages.append({"role": msg.role, "content": msg.content})
+
+    if req.stream and settings.stream_native:
+        return await _native_stream_response(provider, req.model,
+                                             clean_messages, req.max_tokens,
+                                             req.temperature)
 
     try:
         answer, usage = await _forward_v1(provider, req.model, clean_messages,
