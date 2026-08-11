@@ -111,6 +111,16 @@ async def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_corpus_chunks_client
                     ON corpus_chunks (client_id);
 
+                -- Registre de révocation des sessions du dashboard :
+                -- sans lui, un cookie volé resterait valable jusqu'à
+                -- son expiration.
+                CREATE TABLE IF NOT EXISTS session_revocations (
+                    scope      TEXT NOT NULL,   -- jti | subject | global
+                    value      TEXT NOT NULL,
+                    revoked_at DOUBLE PRECISION NOT NULL,
+                    PRIMARY KEY (scope, value)
+                );
+
                 -- Index aveugle des personnes concernées : permet de
                 -- retrouver les entrées d'un individu (RGPD art. 15/17)
                 -- sans jamais stocker son identité en clair.

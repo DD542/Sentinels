@@ -32,10 +32,12 @@ import jwt
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
+from pydantic import BaseModel
 
 from .config import get_settings
 from .audit import chain
 from . import logs
+from . import revocation
 
 settings = get_settings()
 router = APIRouter()
@@ -63,7 +65,11 @@ def _session_key() -> Fernet:
 
 
 def issue_session(identity: dict) -> str:
-    payload = json.dumps({**identity, "iat": int(time.time())})
+    """Chaque session porte un identifiant unique (`jti`) : sans lui, on
+    ne pourrait pas en couper une seule — seulement toutes."""
+    payload = json.dumps({**identity,
+                          "jti": secrets.token_urlsafe(12),
+                          "iat": int(time.time())})
     return _session_key().encrypt(payload.encode()).decode()
 
 
@@ -75,9 +81,12 @@ def read_session(token: str | None) -> dict | None:
     try:
         raw = _session_key().decrypt(
             token.encode(), ttl=settings.session_ttl_hours * 3600)
-        return json.loads(raw)
+        session = json.loads(raw)
     except (InvalidToken, ValueError):
         return None
+    # Un cookie valide cryptographiquement peut avoir été révoqué depuis
+    # (déconnexion, départ d'un employé, incident).
+    return None if revocation.is_revoked(session) else session
 
 
 # ============================================================
@@ -312,8 +321,47 @@ def verify_id_token(id_token: str, nonce: str | None = None) -> dict:
     return claims
 
 
+class RevokeRequest(BaseModel):
+    admin_token: str
+    subject: str | None = None      # adresse ou identifiant du compte
+    all_sessions: bool = False
+
+
 @router.post("/auth/logout")
-async def logout() -> JSONResponse:
+async def logout(request: Request) -> JSONResponse:
+    """Déconnexion : le cookie est effacé ET la session révoquée. Sans la
+    révocation, une copie du cookie resterait valable jusqu'à son
+    expiration — se déconnecter ne protégerait que soi-même."""
+    session = read_session(request.cookies.get(SESSION_COOKIE))
+    if session and session.get("jti"):
+        await revocation.revoke_session(session["jti"])
     response = JSONResponse({"status": "deconnecte"})
     response.delete_cookie(SESSION_COOKIE)
     return response
+
+
+@router.post("/auth/revoke")
+async def revoke(req: RevokeRequest) -> dict:
+    """Coupe les sessions d'un compte, ou toutes (incident). Protégé par
+    le token admin et scellé dans le journal d'audit."""
+    if not secrets.compare_digest(req.admin_token,
+                                  settings.effective_admin_token):
+        raise HTTPException(status_code=403, detail="Token admin invalide")
+
+    if req.all_sessions:
+        await revocation.revoke_all()
+        entry = await chain.append_async(
+            "SESSION_REVOKE_ALL", "SSO", "sessions:*", {"scope": "global"})
+        return {"scope": "global", "audit_hash": entry["hash"][:12]}
+
+    if not req.subject:
+        raise HTTPException(
+            status_code=400,
+            detail="Fournir `subject` (compte à couper) ou `all_sessions`")
+
+    await revocation.revoke_subject(req.subject)
+    entry = await chain.append_async(
+        "SESSION_REVOKE", "SSO", f"sessions:{req.subject}",
+        {"subject": req.subject}, subject=req.subject)
+    return {"scope": "subject", "subject": req.subject,
+            "audit_hash": entry["hash"][:12]}

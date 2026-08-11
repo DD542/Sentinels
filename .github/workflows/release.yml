@@ -1,0 +1,135 @@
+name: SENTINEL — publication signée
+
+# Publie l'image sur GHCR avec, attachés à son empreinte :
+#   * une SIGNATURE cosign sans clé (l'identité vient d'OIDC GitHub —
+#     aucune clé privée à stocker, donc aucune à faire fuiter) ;
+#   * une PROVENANCE SLSA : quel dépôt, quel commit, quel workflow ont
+#     produit cette image exactement ;
+#   * un SBOM CycloneDX attesté.
+#
+# Ce que ça permet à un client : vérifier, avant de déployer, que l'image
+# vient bien de ce dépôt et n'a pas été substituée en chemin.
+#
+# Ne se déclenche que sur un tag `v*` : on ne publie pas à chaque commit.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write        # pousser sur GHCR
+      id-token: write        # signature sans clé (OIDC)
+      attestations: write    # provenance et SBOM attestés
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authentification GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Métadonnées de l'image
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - name: Construire et pousser
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      # --- Barrière qualité : on ne signe pas une image vulnérable ---
+      - name: Scanner avant de signer
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+      - name: Installer cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Signer l'image (sans clé, identité OIDC)
+        run: |
+          cosign sign --yes \
+            "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - name: Générer le SBOM (CycloneDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          upload-artifact: false
+
+      - name: Attacher le SBOM signé à l'image
+        run: |
+          cosign attest --yes \
+            --predicate sbom.cdx.json \
+            --type cyclonedx \
+            "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - name: Provenance SLSA
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attestation SBOM (format GitHub)
+        uses: actions/attest-sbom@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          sbom-path: sbom.cdx.json
+          push-to-registry: true
+
+      # --- On vérifie notre propre publication : une signature qu'on ne
+      #     sait pas vérifier ne prouve rien. ---
+      - name: Vérifier la signature
+        run: |
+          cosign verify \
+            --certificate-identity-regexp "^https://github.com/${IMAGE_NAME}/.github/workflows/release.yml@" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - name: Publier le SBOM en artefact de version
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+          retention-days: 365

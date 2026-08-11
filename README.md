@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/DD542/sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/DD542/sentinel/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-249%20passed-brightgreen)](https://github.com/DD542/sentinel)
+[![Tests](https://img.shields.io/badge/tests-265%20passed-brightgreen)](https://github.com/DD542/sentinel)
 [![Benchmark](https://img.shields.io/badge/detection%20F1-100%25-brightgreen)](https://github.com/DD542/sentinel)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -71,7 +71,7 @@ Benchmark sur **89 prompts étiquetés** (`backend/tests/benchmark.py`) :
 | **Global** | **100 %** | **100 %** | **100 %** |
 
 **42 prompts innocents traités sans aucun faux positif.** Latence moyenne : ~100 ms/prompt.
-Suite de tests : **249 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
+Suite de tests : **265 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
 
 > Ces chiffres portent sur le jeu de test fourni, qui couvre les formats structurés, l'obfuscation (base64, hexadécimal, espacement) et les tentatives d'évasion. Ils ne constituent pas une garantie de détection exhaustive — voir [Limites connues](#limites-connues).
 
@@ -267,7 +267,8 @@ Le fournisseur reçoit `Hugo Blanc` et un IBAN factice valide. L'employé reçoi
 | `/compliance/report.json` | GET | token dashboard¹ | Rapport canonique signé HMAC (vérifiable) |
 | `/auth/login` | GET | — | Démarre la connexion SSO (OIDC + PKCE) |
 | `/auth/callback` | GET | — | Retour du fournisseur d'identité |
-| `/auth/logout` | POST | — | Ferme la session |
+| `/auth/logout` | POST | — | Ferme **et révoque** la session |
+| `/auth/revoke` | POST | token admin | Coupe les sessions d'un compte, ou toutes |
 | `/dashboard/stats` | GET | session SSO ou token¹ | Compteurs et événements récents |
 | `/dashboard/ws` | WS | token dashboard¹ | Flux temps réel |
 
@@ -366,6 +367,8 @@ Ces limites sont documentées **parce qu'elles existent dans toutes les solution
 - [x] **Streaming natif du fournisseur** : les fragments sont relayés au fil de l'eau et désanonymisés incrémentalement — une fenêtre de retenue garantit qu'un jeton coupé entre deux fragments est quand même restauré
 - [x] **Chart Helm durci** (fail-closed, non-root, FS en lecture seule) + **Trivy, SBOM CycloneDX et `pip-audit` en CI** — garde-fous du chart vérifiés automatiquement
 - [x] **SSO d'entreprise OIDC** (PKCE, JWKS, restriction par domaine/groupe, session chiffrée) : connexions nominatives scellées dans l'audit
+- [x] **Révocation de session** (session, compte ou globale) : un cookie volé cesse d'être valable, la déconnexion tue réellement la session
+- [x] **Images signées** (cosign sans clé) avec **provenance SLSA** et **SBOM attesté** : un client peut vérifier l'origine avant de déployer
 
 ** À venir**
 
@@ -406,7 +409,7 @@ Benchmark over **89 labelled prompts** (`backend/tests/benchmark.py`):
 | **Overall** | **100%** | **100%** | **100%** |
 
 **42 innocent prompts processed with zero false positives.** Average latency: ~100 ms/prompt.
-Test suite: **249 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
+Test suite: **265 unit, integration and API tests, all green** in CI on Python 3.11 and 3.12.
 
 > These figures cover the provided test set (structured formats, base64/hex/spacing obfuscation, evasion attempts). They are not a guarantee of exhaustive detection — see [Known limitations](#known-limitations).
 
@@ -524,7 +527,8 @@ cd ../frontend && npm install && npm run dev    # dashboard
 | `/compliance/report.json` | GET | dashboard token¹ | Canonical HMAC-signed report (verifiable) |
 | `/auth/login` | GET | — | Start SSO login (OIDC + PKCE) |
 | `/auth/callback` | GET | — | Identity provider callback |
-| `/auth/logout` | POST | — | End the session |
+| `/auth/logout` | POST | — | End **and revoke** the session |
+| `/auth/revoke` | POST | admin token | Cut a person's sessions, or all of them |
 | `/dashboard/stats` | GET | SSO session or token¹ | Counters and recent events |
 | `/dashboard/ws` | WS | dashboard token¹ | Real-time stream |
 
@@ -591,6 +595,8 @@ These limitations are documented **because they exist in every solution on the m
 - [x] **Native provider streaming**: chunks are relayed as they arrive and detokenised incrementally — a hold-back window guarantees a token split across chunks is still restored
 - [x] **Hardened Helm chart** (fail-closed, non-root, read-only FS) + **Trivy, CycloneDX SBOM and `pip-audit` in CI** — the chart's guardrails are themselves tested
 - [x] **Enterprise OIDC SSO** (PKCE, JWKS, domain/group restriction, encrypted session): named logins sealed in the audit chain
+- [x] **Session revocation** (session, account or global): a stolen cookie stops working, logout actually kills the session
+- [x] **Signed images** (keyless cosign) with **SLSA provenance** and **attested SBOM**: customers can verify provenance before deploying
 
 ** Next**
 

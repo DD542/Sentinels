@@ -24,6 +24,7 @@ from . import auth
 from . import metrics
 from . import logs
 from . import maintenance
+from . import revocation
 
 settings = get_settings()
 
@@ -57,6 +58,7 @@ async def lifespan(app: FastAPI):
     await chain.load_from_db()
     await events.load_stats_from_db()
     await l3_semantic.load_corpus_from_db()
+    await revocation.load_from_db()
     if settings.strict_mode and not db.is_enabled():
         raise RuntimeError(
             "SENTINEL_STRICT : demarrage refuse — connexion Postgres impossible")

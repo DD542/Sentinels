@@ -90,13 +90,50 @@ coffre-fort de secrets : c'est un accès non nominatif.
 Pour l'interdire complètement, laissez `DASHBOARD_TOKEN` vide une fois le
 SSO en place.
 
+## Révocation des sessions
+
+Le cookie est autoportant : il porte sa propre validité, ce qui évite un
+aller-retour en base à chaque requête. Sans registre de révocation, une
+session ne pourrait donc pas être coupée avant son expiration — un
+cookie volé resterait utilisable, et « se déconnecter » n'effacerait le
+cookie que dans le navigateur de son propriétaire.
+
+Trois portées sont disponibles :
+
+| Portée | Effet | Usage |
+|:---|:---|:---|
+| **Session** | Coupe une session précise (`jti`) | La déconnexion l'utilise : le cookie meurt, y compris pour qui en garderait une copie |
+| **Compte** | Coupe toutes les sessions d'une personne ouvertes avant la révocation | Départ d'un employé, compte compromis |
+| **Globale** | Coupe toutes les sessions | Incident, rotation de clé |
+
+```bash
+# Couper les sessions d'une personne (adresse ou identifiant du compte)
+curl -X POST http://<sentinel>/auth/revoke \
+  -H "Content-Type: application/json" \
+  -d '{"admin_token": "<ADMIN_TOKEN>", "subject": "alice@monentreprise.fr"}'
+```
+
+```bash
+# Tout couper (incident, rotation de clé)
+curl -X POST http://<sentinel>/auth/revoke \
+  -H "Content-Type: application/json" \
+  -d '{"admin_token": "<ADMIN_TOKEN>", "all_sessions": true}'
+```
+
+Chaque révocation est scellée dans le journal d'audit. Le registre est
+persisté (il survit aux redémarrages) et **borné** : une révocation est
+effacée par la maintenance périodique dès que la session visée aurait
+expiré d'elle-même.
+
+Une révocation par compte ne coupe que les sessions **antérieures** :
+réactiver un compte n'impose pas de défaire quoi que ce soit.
+
 ## Limites connues
 
-- **Session non révocable individuellement avant expiration.** Le cookie
-  est autoportant (pas de session serveur) : désactiver un compte chez le
-  fournisseur empêche toute *nouvelle* connexion, mais une session en
-  cours reste valide jusqu'à `SESSION_TTL_HOURS`. Réduisez ce délai si
-  votre politique l'exige.
+- **La révocation d'une session est immédiate, celle d'un compte aussi**,
+  mais elles reposent sur un registre en mémoire alimenté par la base :
+  sans persistance (`DATABASE_URL` vide), une révocation ne survit pas au
+  redémarrage.
 - **Pas de rafraîchissement de jeton.** À l'expiration, l'utilisateur se
   reconnecte — un aller-retour transparent si la session du fournisseur
   est encore ouverte.

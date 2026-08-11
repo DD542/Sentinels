@@ -9,7 +9,9 @@ def reset_vault():
     from app.vault import fpe
     from app.audit import chain, crypto
     from app import ratelimit
+    from app import revocation
     from app.detection import l3_semantic
+    revocation._reset()
     fpe._REVERSE_MAP.clear()
     chain._CHAIN.clear()
     chain._SHREDDED.clear()

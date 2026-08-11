@@ -112,12 +112,50 @@ mode strict par défaut fait échouer la CI.
 L'image ne contient pas de compilateur : `gcc` et `g++` sont installés
 pour construire les wheels puis purgés dans la même couche.
 
+## Vérifier une image publiée
+
+Les images publiées sur un tag `v*` sont **signées avec cosign sans clé** :
+l'identité vient du jeton OIDC de GitHub Actions, il n'y a donc aucune
+clé privée à stocker — ni à faire fuiter. Trois éléments sont attachés à
+l'empreinte de l'image : la signature, une **provenance SLSA** (quel
+dépôt, quel commit, quel workflow) et un **SBOM CycloneDX attesté**.
+
+Avant de déployer, un client peut vérifier que l'image vient bien de ce
+dépôt et n'a pas été substituée :
+
+```bash
+# Signature et identité du producteur
+cosign verify \
+  --certificate-identity-regexp '^https://github.com/DD542/Sentinels/.github/workflows/release.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/dd542/sentinels@sha256:<digest>
+```
+
+```bash
+# Provenance SLSA et SBOM attesté (CLI GitHub)
+gh attestation verify oci://ghcr.io/dd542/sentinels@sha256:<digest> \
+  --repo DD542/Sentinels
+```
+
+```bash
+# Contenu du SBOM
+cosign download attestation \
+  --predicate-type https://cyclonedx.org/bom \
+  ghcr.io/dd542/sentinels@sha256:<digest>
+```
+
+Le workflow **scanne avant de signer** et **vérifie sa propre
+signature** après publication : on ne signe pas une image vulnérable, et
+une signature qu'on ne sait pas vérifier ne prouve rien.
+
 ## Limites connues du déploiement
 
 - **Image de base non épinglée par empreinte.** `python:3.12-slim` suit
   les correctifs de sécurité, au prix de la reproductibilité stricte.
   Épinglez un digest si votre politique l'exige.
-- **Le SBOM n'est pas signé.** Une signature (cosign, attestation SLSA)
-  reste à ajouter pour une chaîne vérifiable de bout en bout.
+- **La vérification suppose de connaître l'empreinte.** Signature et
+  attestations sont attachées au digest, pas au tag : vérifiez
+  `image@sha256:…`, pas `image:latest`, qu'un attaquant pourrait
+  repointer.
 - **Actions GitHub référencées par branche** (`@master` pour Trivy) :
   épinglez un SHA de commit en environnement d'entreprise.

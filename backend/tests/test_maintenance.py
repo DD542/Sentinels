@@ -165,8 +165,9 @@ class TestMaintenanceLoop:
                                      {"value": "A"})
 
         result = await maintenance.run_once()
-        assert result == {"vault_tokens_deleted": 1,
-                          "audit_entities_shredded": 1}
+        assert result["vault_tokens_deleted"] == 1
+        assert result["audit_entities_shredded"] == 1
+        assert "revocations_purged" in result   # troisieme stock purge
         assert "tok-2" in fake_db["vault"]
 
     async def test_start_stop_idempotents(self, monkeypatch):

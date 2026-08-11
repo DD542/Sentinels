@@ -26,6 +26,7 @@ from .config import get_settings
 from .audit import chain
 from .vault import fpe
 from . import logs
+from . import revocation
 
 settings = get_settings()
 _log = logs.get_logger("maintenance")
@@ -38,8 +39,12 @@ async def run_once() -> dict:
     vault_deleted = await fpe.purge_expired()
     audit_entities = await chain.purge_expired_keys(
         settings.audit_retention_days)
+    # Une revocation ne sert plus a rien quand la session visee aurait
+    # expire d'elle-meme : le registre reste borne.
+    revocations = await revocation.purge_expired(settings.session_ttl_hours)
     result = {"vault_tokens_deleted": vault_deleted,
-              "audit_entities_shredded": audit_entities}
+              "audit_entities_shredded": audit_entities,
+              "revocations_purged": revocations}
     if vault_deleted or audit_entities:
         _log.info("passe de maintenance", extra={"event": "purge", **result})
     return result
