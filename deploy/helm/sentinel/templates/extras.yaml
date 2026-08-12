@@ -85,9 +85,20 @@ spec:
         - protocol: TCP
           port: 8000
     {{- end }}
+    {{- with .Values.networkPolicy.ingressFrom }}
     - from:
-        {{- toYaml .Values.networkPolicy.ingressFrom | nindent 8 }}
+        {{- toYaml . | nindent 8 }}
       ports:
         - protocol: TCP
           port: 8000
+    {{- end }}
+{{/*
+`ingressFrom` vide : on n'émet PAS de règle.
+
+Kubernetes traite un `from` vide comme « toutes sources autorisées ».
+Émettre la règle quand même produisait donc une NetworkPolicy qui
+n'isolait rien — pire qu'absente, puisqu'elle donne à l'exploitant la
+conviction d'être protégé. Sans règle, seule la console peut joindre
+l'API : fail-closed, comme le reste du chart.
+*/}}
 {{- end }}

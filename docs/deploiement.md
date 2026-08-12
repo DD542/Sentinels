@@ -91,6 +91,21 @@ Options désactivées par défaut, à activer selon votre contexte :
 `ingress`, `autoscaling`, `serviceMonitor` (Prometheus Operator) et
 `networkPolicy`.
 
+> **NetworkPolicy — un piège de Kubernetes.** Une règle dont le champ
+> `from` est vide autorise *toutes* les sources. Le chart émettait cette
+> règle dès que `networkPolicy.enabled=true`, même sans source déclarée :
+> la policy semblait isoler l'API et ne l'isolait pas. Corrigé — sans
+> `ingressFrom`, aucune règle n'est émise et seule la console peut
+> joindre l'API. Déclarez vos sources explicitement :
+>
+> ```yaml
+> networkPolicy:
+>   enabled: true
+>   ingressFrom:
+>     - namespaceSelector:
+>         matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+> ```
+
 ## Origines autorisées (CORS)
 
 `config.corsOrigins` liste les origines autorisées à appeler l'API depuis
@@ -169,12 +184,20 @@ push **et chaque lundi** (les CVE apparaissent après la fusion) :
 | Audit des dépendances Python | `pip-audit` | Échec si une dépendance a une vulnérabilité connue |
 | Scan de l'image | Trivy | Rapport SARIF publié dans l'onglet *Security* ; **échec** sur une vulnérabilité corrigeable HIGH ou CRITICAL |
 | Inventaire logiciel | Syft (CycloneDX) | SBOM publié en artefact, conservé 90 jours |
-| Chart Helm | `helm lint`, `helm template`, `kubectl --dry-run` | Le rendu doit être du Kubernetes valide |
-| Garde-fous du chart | `grep` sur le rendu | Échec si `runAsNonRoot`, `readOnlyRootFilesystem` ou le mode strict disparaissent d'une modification |
+| Chart Helm | `helm lint --strict`, `helm template` (4 combinaisons de valeurs) | Le chart doit se rendre dans tous les modes : par défaut, tout activé, sans console, avec NetworkPolicy restrictive |
+| Rendu du chart | [`valider_rendu.py`](../deploy/helm/valider_rendu.py) | Chaque Service doit viser **un seul** workload, l'ingress ne doit router que vers des Services existants, aucune règle de NetworkPolicy ne doit autoriser toutes les sources, et les garde-fous (`runAsNonRoot`, `readOnlyRootFilesystem`, mode strict) doivent rester présents |
 
 Le dernier point mérite d'être souligné : les garde-fous de sécurité sont
 **testés**, pas seulement écrits. Une modification qui désactiverait le
 mode strict par défaut fait échouer la CI.
+
+> La validation du rendu utilisait auparavant `kubectl apply
+> --dry-run=client`. Cette commande contacte le serveur d'API pour
+> résoudre les types : sans cluster — et un runner n'en a pas — elle
+> échoue systématiquement, y compris avec `--validate=false`. Elle ne
+> validait donc rien. Le script qui l'a remplacée travaille hors ligne,
+> et chacune de ses vérifications a été éprouvée en réintroduisant le
+> défaut qu'elle est censée attraper.
 
 L'image ne contient pas de compilateur : `gcc` et `g++` sont installés
 pour construire les wheels puis purgés dans la même couche.

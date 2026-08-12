@@ -189,9 +189,20 @@ serviceMonitor:
   interval: 30s
   labels: {}
 
-# NetworkPolicy : par défaut, on n'autorise que le trafic entrant
-# explicitement décrit. Sortie ouverte (les fournisseurs d'IA sont sur
-# Internet), à restreindre selon votre politique.
+# NetworkPolicy : seul le trafic entrant explicitement décrit est
+# autorisé (la console est ajoutée automatiquement, sinon elle ne
+# pourrait plus relayer l'API). Sortie ouverte — les fournisseurs d'IA
+# sont sur Internet —, à restreindre selon votre politique.
+#
+# `ingressFrom` vide = AUCUNE source supplémentaire. Attention au piège
+# de Kubernetes : une règle dont le champ `from` est vide autorise
+# *toutes* les sources. Le chart n'émet donc pas de règle du tout dans
+# ce cas, plutôt qu'une règle qui n'isolerait rien.
+#
+# Exemple : n'autoriser que le contrôleur d'ingress.
+#   ingressFrom:
+#     - namespaceSelector:
+#         matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
 networkPolicy:
   enabled: false
   ingressFrom: []
