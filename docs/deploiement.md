@@ -211,8 +211,44 @@ winget install Helm.Helm YannHamon.kubeconform   # ou brew / apt
 ./deploy/helm/valider.sh
 ```
 
-L'image ne contient pas de compilateur : `gcc` et `g++` sont installés
-pour construire les wheels puis purgés dans la même couche.
+L'image ne contient ni compilateur ni pip. `gcc` et `g++` sont installés
+pour construire les wheels puis purgés **dans la même couche** — les
+retirer plus tard ne ferait que les cacher, le contenu resterait dans
+l'historique de l'image.
+
+### Pourquoi pip est retiré de l'image
+
+pip embarque ses propres dépendances (`pip/_vendor/`), et deux d'entre
+elles portaient des vulnérabilités HIGH corrigeables : **msgpack 1.1.2**
+(GHSA-6v7p-g79w-8964) et **setuptools 70.3.0** (CVE-2025-47273). Elles ne
+proviennent d'aucune dépendance du projet — `setuptools` était déjà en
+84.0.0 dans l'image, et `msgpack` n'y figurait même pas. Aucune mise à
+jour de notre côté ne les aurait fait disparaître : elles sont déclarées
+dans `pip/_vendor/vendor.txt`, que le scanner lit.
+
+C'était le dernier échec du scan Trivy, et le retrait de pip est la seule
+correction réelle — par opposition à une suppression du signalement.
+
+C'est de toute façon un durcissement souhaitable : un conteneur de
+production n'a aucune raison de pouvoir installer des paquets. pip y est
+surtout le moyen le plus simple, pour un attaquant ayant obtenu
+l'exécution de code, de faire entrer son outillage.
+
+Conséquence à connaître : on ne peut plus installer de paquet dans un
+conteneur en cours d'exécution. C'est voulu — modifiez l'image, pas le
+conteneur.
+
+### Rejouer les scans en local
+
+```bash
+winget install AquaSecurity.Trivy      # ou brew / apt
+
+docker build -t sentinel:local ./backend
+trivy image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 sentinel:local
+
+docker build -t sentinel-dashboard:local ./frontend
+trivy image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 sentinel-dashboard:local
+```
 
 ## Vérifier une image publiée
 

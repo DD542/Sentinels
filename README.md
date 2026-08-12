@@ -380,13 +380,22 @@ réponse à la question que pose tout service achats : *vos équipes
 peuvent-elles lire nos données ?*
 
 **Chaîne d'approvisionnement.** Un outil de sécurité doit être exemplaire
-sur la sienne : `pip-audit` sur les dépendances, **Trivy** sur l'image
+sur la sienne : `pip-audit` sur les dépendances, **Trivy** sur les images
 (rapport SARIF dans l'onglet *Security*, échec sur toute vulnérabilité
 corrigeable HIGH/CRITICAL), **SBOM CycloneDX** publié en artefact, et
-`helm lint` + rendu validé par `kubectl --dry-run`. Le tout rejoué chaque
-lundi, car les CVE apparaissent après la fusion. Les garde-fous du chart
-sont eux-mêmes testés : désactiver le mode strict par défaut fait échouer
-la CI.
+`helm lint --strict` + rendu validé par **kubeconform** et un contrôle de
+cohérence du chart. Le tout rejoué chaque lundi, car les CVE apparaissent
+après la fusion. Les garde-fous du chart sont eux-mêmes testés :
+désactiver le mode strict par défaut fait échouer la CI.
+
+**pip est retiré de l'image finale.** Ses dépendances vendorisées
+(`pip/_vendor/`) portaient les deux seules vulnérabilités HIGH
+corrigeables restantes — elles ne venaient d'aucune dépendance du projet,
+et aucune mise à jour de notre côté ne les aurait fait disparaître. C'est
+par ailleurs un durcissement classique : un conteneur de production n'a
+aucune raison de pouvoir installer des paquets, et pip est le moyen le
+plus simple, pour un attaquant ayant obtenu l'exécution de code, de faire
+entrer son outillage.
 
 Guide complet : [`docs/deploiement.md`](docs/deploiement.md).
 

@@ -76,6 +76,22 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
 
+      # La console est déployée par le chart au même titre que l'API : la
+      # laisser hors du scan reviendrait à ne contrôler que la moitié de
+      # ce qu'on livre — et c'est elle qui reçoit les identifiants des
+      # administrateurs.
+      - name: Construire l'image de la console
+        run: docker build -t sentinel-dashboard:ci ./frontend
+
+      - name: Scanner la console
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: sentinel-dashboard:ci
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
       - name: Générer le SBOM (CycloneDX)
         uses: anchore/sbom-action@v0
         with:
