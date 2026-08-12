@@ -6,9 +6,12 @@ non-conformité (RGPD art. 5(1)(e)) : ce module fait le travail réel.
 
 Deux opérations, volontairement dissymétriques :
 
-* **Vault** — les tokens expirés sont *supprimés*. Ils n'ont qu'une valeur
+* **Vault** — les tokens expirés sont *supprimés*, en base **et dans le
+  cache mémoire de chaque processus**. Ils n'ont qu'une valeur
   fonctionnelle (restaurer une valeur dans une réponse), aucune valeur
-  probante : passé le TTL, ils n'ont plus de raison d'exister.
+  probante : passé le TTL, ils n'ont plus de raison d'exister. Le cache
+  compte autant que la base : une rétention appliquée d'un seul côté
+  n'est pas appliquée.
 
 * **Audit** — les entrées ne sont *jamais* supprimées : la chaîne de
   hachage doit rester vérifiable de bout en bout (AI Act art. 26(6)), et
@@ -55,8 +58,11 @@ async def _verifier_journal() -> dict:
 
 
 async def run_once() -> dict:
-    """Une passe de maintenance. Sans base, tout est no-op."""
-    vault_deleted = await fpe.purge_expired()
+    """Une passe de maintenance. Sans base, seule l'éviction du cache
+    mémoire a lieu — mais elle a lieu : le mode sans Postgres n'est pas
+    dispensé de la durée de conservation."""
+    vault = await fpe.purge_expired_detail()
+    vault_deleted = vault["rows_deleted"]
     audit_entities = await chain.purge_expired_keys(
         settings.audit_retention_days)
     # Une revocation ne sert plus a rien quand la session visee aurait
@@ -67,11 +73,13 @@ async def run_once() -> dict:
     # rapporte en O(1) par les reponses d'API.
     controle = await _verifier_journal()
     result = {"vault_tokens_deleted": vault_deleted,
+              "vault_cache_evicted": vault["cache_evicted"],
               "audit_entities_shredded": audit_entities,
               "revocations_purged": revocations,
               "audit_entries_verified": controle["checked"],
               "audit_verified": controle["verified"]}
-    if vault_deleted or audit_entities or controle["checked"]:
+    if (vault_deleted or vault["cache_evicted"] or audit_entities
+            or controle["checked"]):
         _log.info("passe de maintenance", extra={"event": "purge", **result})
     return result
 

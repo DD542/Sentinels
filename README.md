@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/DD542/sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/DD542/sentinel/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-375%20passed-brightgreen)](https://github.com/DD542/sentinel)
+[![Tests](https://img.shields.io/badge/tests-405%20passed-brightgreen)](https://github.com/DD542/sentinel)
 [![Benchmark](https://img.shields.io/badge/detection%20F1-100%25-brightgreen)](https://github.com/DD542/sentinel)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -72,7 +72,7 @@ Benchmark sur **89 prompts étiquetés** (`backend/tests/benchmark.py`) :
 | **Global** | **100 %** | **100 %** | **100 %** |
 
 **42 prompts innocents traités sans aucun faux positif.** Latence moyenne : ~100 ms/prompt.
-Suite de tests : **375 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
+Suite de tests : **405 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
 
 > Ces chiffres portent sur le jeu de test fourni, qui couvre les formats structurés, l'obfuscation (base64, hexadécimal, espacement) et les tentatives d'évasion. Ils ne constituent pas une garantie de détection exhaustive — voir [Limites connues](#limites-connues).
 
@@ -266,6 +266,38 @@ curl -X POST http://localhost:8000/gateway/chat \
 
 Le fournisseur reçoit `Hugo Blanc` et un IBAN factice valide. L'employé reçoit la réponse avec **les vraies valeurs restaurées**.
 
+**Remplacer OpenAI sans toucher au code applicatif**
+
+SENTINEL expose la surface OpenAI. Un outil existant bascule en changeant
+deux variables :
+
+```bash
+export OPENAI_BASE_URL=http://localhost:8000/v1
+export OPENAI_API_KEY=sntl_...
+```
+
+Trois endpoints sont servis, et les trois comptent :
+
+- `/v1/chat/completions` — streaming SSE, `tools`, contenu multimodal,
+  `response_format`, `seed`… Les champs que SENTINEL n'interprète pas
+  sont relayés tels quels au fournisseur, jamais abandonnés en silence.
+- `/v1/models` — Open WebUI, LibreChat et Cursor l'appellent au premier
+  contact pour peupler leur sélecteur. Sans lui, ces clients concluent
+  « base_url invalide » et l'intégrateur repointe l'outil directement sur
+  OpenAI : la passerelle est contournée non par malveillance, mais parce
+  qu'elle semblait cassée.
+- `/v1/embeddings` — **le point le plus important pour une chaîne RAG.**
+  L'indexation vectorise l'intégralité de vos documents. Si cette seule
+  étape sort du périmètre, contrats, dossiers RH et fichiers clients
+  partent en entier chez le fournisseur — pendant que le chat, lui, est
+  protégé. Ici le texte est assaini avant vectorisation. La recherche
+  sémantique continue de fonctionner : la substitution est déterministe,
+  la même valeur donne toujours le même substitut.
+
+Le modèle détermine le fournisseur (`gpt-4o` → OpenAI, `claude-…` →
+Anthropic, `mistral-…` → Mistral, le reste → Groq). Les clés fournisseur
+restent côté serveur.
+
 ### Référence API
 
 | Endpoint | Méthode | Auth | Description |
@@ -287,6 +319,9 @@ Le fournisseur reçoit `Hugo Blanc` et un IBAN factice valide. L'employé reçoi
 | `/corpus/{doc_id}` | DELETE | clé SENTINEL | Retirer un document du corpus |
 | `/gateway/scan` | POST | clé SENTINEL | Analyser un texte sans le transmettre |
 | `/gateway/chat` | POST | clé SENTINEL | Pipeline complet vers un fournisseur IA |
+| `/v1/chat/completions` | POST | clé SENTINEL | **Compatible OpenAI** — streaming, `tools`, multimodal |
+| `/v1/models` | GET | clé SENTINEL | Catalogue des modèles servis (peuple le sélecteur des clients) |
+| `/v1/embeddings` | POST | clé SENTINEL | Vectorisation **après** assainissement (chaînes RAG) |
 | `/compliance/report` | GET | token dashboard¹ | Rapport de conformité signé (HTML, imprimable PDF) |
 | `/compliance/report.json` | GET | token dashboard¹ | Rapport canonique signé HMAC (vérifiable) |
 | `/auth/login` | GET | — | Démarre la connexion SSO (OIDC + PKCE) |
@@ -347,7 +382,7 @@ Guide complet : [`docs/deploiement.md`](docs/deploiement.md).
 ```bash
 cd backend
 
-pytest tests/ -v                                    # 166 tests
+pytest tests/ -v                                    # 405 tests
 pytest tests/ --cov=app --cov-report=term-missing   # couverture
 python tests/benchmark.py                           # métriques de détection (jeu interne)
 python tests/benchmark_external.py                  # benchmark externe (ai4privacy FR)
@@ -385,7 +420,7 @@ Ces limites sont documentées **parce qu'elles existent dans toutes les solution
 - [x] Dashboard temps réel Vue 3 + WebSocket
 - [x] Registre Shadow AI (souveraineté des fournisseurs)
 - [x] Persistance Postgres validée (clés et audit survivent aux redémarrages)
-- [x] Suite de 166 tests, dont 66 tests d'intégration API (TestClient FastAPI)
+- [x] Suite de 405 tests, dont 66 tests d'intégration API (TestClient FastAPI)
 - [x] Endpoint compatible OpenAI : tous rôles assainis, réponse désanonymisée, `usage` réel remonté
 - [x] Token admin dédié (`ADMIN_TOKEN`), comparaison en temps constant
 - [x] Révocation de clés par client (`/admin/keys/revoke`, scellée dans l'audit) et rate-limiting par client (fenêtre glissante, `RATE_LIMIT_PER_MINUTE`)
@@ -577,6 +612,9 @@ cd ../frontend && npm install && npm run dev    # dashboard
 | `/corpus/{doc_id}` | DELETE | SENTINEL key | Remove a document from the corpus |
 | `/gateway/scan` | POST | SENTINEL key | Analyse text without forwarding |
 | `/gateway/chat` | POST | SENTINEL key | Full pipeline to an AI provider |
+| `/v1/chat/completions` | POST | SENTINEL key | **OpenAI-compatible** — streaming, `tools`, multimodal |
+| `/v1/models` | GET | SENTINEL key | Model catalogue (populates client model pickers) |
+| `/v1/embeddings` | POST | SENTINEL key | Vectorisation **after** sanitisation (RAG pipelines) |
 | `/compliance/report` | GET | dashboard token¹ | Signed compliance report (HTML, print-to-PDF) |
 | `/compliance/report.json` | GET | dashboard token¹ | Canonical HMAC-signed report (verifiable) |
 | `/auth/login` | GET | — | Start SSO login (OIDC + PKCE) |
@@ -593,7 +631,7 @@ cd ../frontend && npm install && npm run dev    # dashboard
 
 ```bash
 cd backend
-pytest tests/ -v              # 166 tests
+pytest tests/ -v              # 405 tests
 python tests/benchmark.py     # detection metrics (internal set)
 python tests/benchmark_external.py   # external benchmark (ai4privacy FR)
 ```

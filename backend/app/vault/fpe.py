@@ -1,5 +1,6 @@
 from __future__ import annotations
 import hashlib
+import time
 import hmac
 import re
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,16 @@ DEFAULT_CLIENT = "_global"
 # un jeton du client A, se voyait restaurer avec la VRAIE valeur de A.
 # Dans un outil de protection des données, c'est le pire défaut possible.
 _REVERSE_MAP: dict[str, dict[str, tuple[str, EntityType]]] = {}
+
+# Echeance de chaque jeton en memoire : client_id -> {jeton -> instant}.
+#
+# Sans elle, le cache ne connaissait aucune duree de vie. Deux
+# consequences : il grossissait sans fin (mesure : ~1,7 Go par jour et
+# par processus au debit maximal), et surtout la duree de conservation
+# annoncee n'etait pas tenue — un processus demarre depuis trente jours
+# restaurait encore les jetons du premier jour, alors que la politique
+# promet leur suppression apres VAULT_TTL_HOURS.
+_EXPIRATIONS: dict[str, dict[str, float]] = {}
 
 # Espace des substituts. Il doit être VASTE : deux valeurs distinctes qui
 # reçoivent le même jeton se corrompent mutuellement (le vault ne retient
@@ -152,6 +163,31 @@ def _client_map(client_id: str) -> dict[str, tuple[str, EntityType]]:
     return _REVERSE_MAP.setdefault(client_id, {})
 
 
+def _client_expirations(client_id: str) -> dict[str, float]:
+    return _EXPIRATIONS.setdefault(client_id, {})
+
+
+def _noter(client_id: str, token: str, value: str, etype: EntityType) -> None:
+    """Enregistre un jeton et son échéance."""
+    _client_map(client_id)[token] = (value, etype)
+    _client_expirations(client_id)[token] = (
+        time.time() + settings.vault_ttl_hours * 3600)
+
+
+def _candidats_memoire(client_id: str) -> dict[str, tuple[str, EntityType]]:
+    """Jetons du client **encore valides**.
+
+    Un jeton périmé ne doit plus rien restaurer, même si la passe de
+    maintenance ne l'a pas encore évincé : la durée de conservation est
+    une promesse, pas une intention."""
+    maintenant = time.time()
+    echeances = _client_expirations(client_id)
+    return {jeton: valeur
+            for jeton, valeur in _client_map(client_id).items()
+            # Absence d'échéance : entrée posée directement (tests, outils).
+            if echeances.get(jeton, float("inf")) > maintenant}
+
+
 def _fake_digits(original: str, tentative: int = 0) -> str:
     out, stream = [], _prf(original, f"d{tentative}")
     for ch in original:
@@ -212,14 +248,14 @@ def _make_token(value: str, etype: EntityType,
 def tokenize(value: str, etype: EntityType,
              client_id: str = DEFAULT_CLIENT) -> str:
     token = _make_token(value, etype, client_id)
-    _client_map(client_id)[token] = (value, etype)
+    _noter(client_id, token, value, etype)
     return token
 
 
 async def tokenize_async(value: str, etype: EntityType,
                          client_id: str = DEFAULT_CLIENT) -> str:
     token = _make_token(value, etype, client_id)
-    _client_map(client_id)[token] = (value, etype)
+    _noter(client_id, token, value, etype)
     if db.is_enabled():
         try:
             expires = datetime.now(timezone.utc) + timedelta(hours=settings.vault_ttl_hours)
@@ -281,10 +317,57 @@ async def _db_candidates(client_id: str = DEFAULT_CLIENT) -> dict[str, tuple[str
     return out
 
 
+def _evincer_memoire() -> int:
+    """Retire du cache les jetons périmés. Sans cette éviction, le cache
+    croît indéfiniment : ~1,7 Go par jour et par processus au débit
+    maximal mesuré."""
+    maintenant = time.time()
+    evinces = 0
+    for client_id, echeances in list(_EXPIRATIONS.items()):
+        perimes = [j for j, fin in echeances.items() if fin <= maintenant]
+        if not perimes:
+            continue
+        vault = _REVERSE_MAP.get(client_id, {})
+        for jeton in perimes:
+            echeances.pop(jeton, None)
+            vault.pop(jeton, None)
+        evinces += len(perimes)
+
+        # `pop` retire l'entrée mais ne rend pas la table de hachage :
+        # un dict qui a contenu 20 000 clés en occupe encore 0,8 Mo une
+        # fois vidé. Reconstruire le libère réellement. On ne le fait que
+        # si la purge a emporté au moins la moitié — sinon la recopie
+        # coûterait plus qu'elle ne rapporte.
+        if len(perimes) >= len(vault):
+            _REVERSE_MAP[client_id] = dict(vault)
+            _EXPIRATIONS[client_id] = dict(echeances)
+    return evinces
+
+
+async def purge_expired_detail() -> dict[str, int]:
+    """Applique réellement la durée de conservation, **des deux côtés** :
+    éviction du cache mémoire et suppression des lignes en base. Sans ça,
+    `expires_at` ne serait qu'une intention (et la politique de rétention
+    annoncée, inexacte).
+
+    Les deux comptages sont rapportés séparément parce qu'ils ne
+    répondent pas de la même chose : la base est partagée, le cache est
+    local à chaque processus."""
+    evinces = _evincer_memoire()
+    if evinces:
+        from .. import logs
+        logs.get_logger("vault").info(
+            "jetons evinces du cache", extra={
+                "event": "vault_cache_evict", "evicted": evinces})
+    return {"cache_evicted": evinces, "rows_deleted": await _purger_base()}
+
+
 async def purge_expired() -> int:
-    """Applique réellement la durée de conservation : supprime les tokens
-    expirés. Sans ça, `expires_at` ne serait qu'une intention (et la
-    politique de rétention annoncée, inexacte)."""
+    """Nombre de lignes supprimées en base. Voir `purge_expired_detail`."""
+    return (await purge_expired_detail())["rows_deleted"]
+
+
+async def _purger_base() -> int:
     if not db.is_enabled():
         return 0
     try:
@@ -385,7 +468,7 @@ async def make_incremental_detokenizer(
     """Désanonymiseur de flux pour UN client : cache mémoire local +
     base (autres workers, redémarrages). Jamais les jetons d'un autre."""
     candidates = await _db_candidates(client_id)
-    candidates.update(_client_map(client_id))
+    candidates.update(_candidats_memoire(client_id))
     return IncrementalDetokenizer(candidates)
 
 
@@ -417,7 +500,7 @@ def detokenize(text: str, client_id: str = DEFAULT_CLIENT) -> str:
     avec base de données (detokenize_async)."""
     unmatched_structured: list[tuple[str, str]] = []
 
-    for token, (real, etype) in _client_map(client_id).items():
+    for token, (real, etype) in _candidats_memoire(client_id).items():
         if token in text:
             text = text.replace(token, real)
             continue
@@ -457,7 +540,7 @@ async def detokenize_async(text: str,
     Le cache local prime (il est toujours à jour) ; la base couvre les
     tokens créés par un autre process ou avant un redémarrage."""
     candidates: dict[str, tuple[str, EntityType]] = await _db_candidates(client_id)
-    candidates.update(_client_map(client_id))
+    candidates.update(_candidats_memoire(client_id))
 
     unmatched_structured: list[tuple[str, str]] = []
 

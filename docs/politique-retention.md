@@ -41,6 +41,21 @@ explicite et non négociable :
 **En mémoire uniquement** (perdu au redémarrage, par conception) : le flux
 temps réel du dashboard (200 derniers événements).
 
+### Le cache du vault
+
+Chaque processus garde en mémoire les correspondances token → valeur
+réelle qu'il vient d'écrire, pour éviter un aller-retour en base à
+chaque désanonymisation. **Ce cache obéit à la même échéance que la
+table `vault`** : chaque entrée porte sa date d'expiration, un token
+périmé ne restaure plus rien même avant le passage de la purge, et la
+purge périodique libère effectivement la mémoire (mesure : 20 000 tokens
+occupent 6,1 Mo, intégralement rendus en 5 ms).
+
+Ce point a fait l'objet d'une correction : le cache n'avait initialement
+aucune échéance. Un processus démarré depuis trente jours pouvait encore
+restaurer des tokens du premier jour — la présente politique n'était
+donc tenue qu'en base, pas en mémoire.
+
 ## Les journaux applicatifs
 
 Les logs sont structurés en JSON (une ligne par événement). Ils

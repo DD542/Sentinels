@@ -20,6 +20,7 @@ client cassait sans erreur, et la faute semblait venir de chez lui.
      d'outil, description des outils.
 """
 from __future__ import annotations
+import asyncio
 import json
 import time
 import uuid
@@ -576,3 +577,225 @@ async def chat_completions(req: ChatCompletionRequest,
                              finish_reason=finish, usage=usage)
     return _openai_response(req.model, restaure, finish_reason=finish,
                             usage=usage)
+
+
+# ============================================================
+# /v1/models — sans lui, la passerelle est invisible
+# ============================================================
+#
+# Open WebUI, LibreChat, Cursor et la plupart des clients appellent
+# `GET /v1/models` au premier contact pour peupler leur sélecteur. Un 404
+# leur fait conclure « base_url invalide » : l'utilisateur repointe son
+# outil directement sur OpenAI, et SENTINEL n'est plus dans le chemin.
+# Le contrôle n'est pas contourné par malveillance — il est contourné
+# parce qu'il avait l'air cassé.
+
+# Repli utilisé si le fournisseur est injoignable. Il ne sert pas de
+# source de vérité : le catalogue réel est celui du fournisseur.
+_CATALOGUE_REPLI: dict[str, tuple[str, ...]] = {
+    "openai": ("gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o3-mini"),
+    "anthropic": ("claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"),
+    "mistral": ("mistral-large-latest", "mistral-small-latest",
+                "ministral-8b-latest", "mistral-embed"),
+    "groq": ("llama-3.3-70b-versatile", "llama-3.1-8b-instant"),
+}
+
+_CATALOGUE_MODELES_URL = {
+    "openai": lambda: f"{settings.openai_base}/v1/models",
+    "anthropic": lambda: f"{settings.anthropic_base}/v1/models",
+    "mistral": lambda: f"{settings.mistral_base}/v1/models",
+    "groq": lambda: f"{settings.groq_base}/openai/v1/models",
+}
+
+_CATALOGUE_TTL = 300.0                    # 5 min
+_catalogue_cache: dict[str, tuple[float, list[str]]] = {}
+
+
+def _reset_catalogue_cache() -> None:
+    """Utilisé par les tests ; en production le cache expire seul."""
+    _catalogue_cache.clear()
+
+
+# Modalités que cette passerelle ne sert pas : audio et image ne passent
+# pas par /v1/chat/completions ni par /v1/embeddings. Les annoncer
+# ferait échouer le premier appel du client.
+_MODALITES_NON_SERVIES = ("whisper", "tts", "dall-e", "sora", "playai")
+
+
+def _routable(provider: str, model: str) -> bool:
+    """Le modèle revient-il bien vers ce fournisseur ?
+
+    Le routage se fait sur le préfixe du nom. Annoncer un modèle que le
+    routage renverrait ailleurs (`dall-e-3` finirait chez Groq) créerait
+    une erreur amont incompréhensible. On n'annonce que ce qu'on sait
+    servir — quitte à annoncer moins."""
+    bas = model.lower()
+    if any(motif in bas for motif in _MODALITES_NON_SERVIES):
+        return False
+    return (_route_provider(model) == provider
+            or _route_embeddings(model, strict=False) == provider)
+
+
+async def _catalogue_fournisseur(provider: str) -> list[str]:
+    """Modèles réellement disponibles chez ce fournisseur.
+
+    Un catalogue figé dans le code vieillit en silence : le client voit
+    un modèle retiré, ou ne voit pas celui qu'il paie. On interroge donc
+    le fournisseur, avec un cache court et un repli en cas de panne."""
+    maintenant = time.time()
+    en_cache = _catalogue_cache.get(provider)
+    if en_cache and maintenant - en_cache[0] < _CATALOGUE_TTL:
+        return en_cache[1]
+
+    try:
+        cle = _provider_key(provider)
+        entetes = ({"x-api-key": cle, "anthropic-version": "2023-06-01"}
+                   if provider == "anthropic"
+                   else {"Authorization": f"Bearer {cle}"})
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(_CATALOGUE_MODELES_URL[provider](),
+                                    headers=entetes)
+            resp.raise_for_status()
+        noms = [str(m.get("id")) for m in (resp.json().get("data") or [])
+                if m.get("id")]
+    except Exception as e:
+        _log.warning("catalogue fournisseur indisponible", extra={
+            "event": "models_fallback", "provider": provider,
+            "error": type(e).__name__})
+        noms = list(_CATALOGUE_REPLI[provider])
+
+    noms = sorted({n for n in noms if _routable(provider, n)})
+    _catalogue_cache[provider] = (maintenant, noms)
+    return noms
+
+
+@router.get("/v1/models")
+async def list_models(client_id: str = Depends(auth.verify_bearer_key)) -> dict:
+    """Catalogue des modèles servis par cette passerelle.
+
+    Seuls les fournisseurs dont la clé est configurée apparaissent : un
+    modèle listé mais non servable produirait une erreur 503 au premier
+    message."""
+    disponibles = [p for p in _CATALOGUE_MODELES_URL
+                   if _cle_configuree(p)]
+    catalogues = await asyncio.gather(
+        *(_catalogue_fournisseur(p) for p in disponibles),
+        return_exceptions=False)
+
+    cree = int(time.time())
+    data = [{"id": nom, "object": "model", "created": cree, "owned_by": provider}
+            for provider, noms in zip(disponibles, catalogues)
+            for nom in noms]
+    return {"object": "list", "data": data}
+
+
+@router.get("/v1/models/{model_id:path}")
+async def retrieve_model(model_id: str,
+                         client_id: str = Depends(auth.verify_bearer_key)) -> dict:
+    """Certains clients interrogent un modèle précis avant de l'utiliser."""
+    provider = _route_provider(model_id)
+    if not _cle_configuree(provider):
+        raise HTTPException(status_code=404, detail={"error": {
+            "message": f"Modele inconnu de cette passerelle : {model_id}",
+            "type": "model_not_found"}})
+    return {"id": model_id, "object": "model", "created": int(time.time()),
+            "owned_by": provider}
+
+
+def _cle_configuree(provider: str) -> bool:
+    return bool({"openai": settings.openai_api_key,
+                 "anthropic": settings.anthropic_api_key,
+                 "mistral": settings.mistral_api_key,
+                 "groq": settings.groq_api_key}.get(provider))
+
+
+# ============================================================
+# /v1/embeddings — le trou par lequel passaient les documents
+# ============================================================
+#
+# Une chaîne RAG vectorise l'intégralité des documents de l'entreprise.
+# Sans cet endpoint, la requête d'embedding échouait en 404 et
+# l'intégrateur pointait cette seule étape directement sur OpenAI : les
+# contrats, les dossiers RH et les fichiers clients partaient EN ENTIER,
+# hors de toute inspection — alors même que le chat, lui, était protégé.
+#
+# Les vecteurs renvoyés portent le texte pseudonymisé. La recherche
+# sémantique continue de fonctionner (la substitution est stable et
+# déterministe : la même valeur donne toujours le même jeton), mais le
+# fournisseur n'a jamais vu la donnée réelle.
+
+class EmbeddingsRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    model: str
+    input: str | list
+
+
+def _route_embeddings(model: str, strict: bool = True) -> str:
+    m = model.lower()
+    if m.startswith(("text-embedding", "text-similarity")):
+        return "openai"
+    if m.startswith("mistral-embed"):
+        return "mistral"
+    if not strict:
+        return ""
+    raise HTTPException(status_code=400, detail={"error": {
+        "message": (f"Modele d'embedding non supporte : {model}. "
+                    "Modeles connus : text-embedding-3-small, "
+                    "text-embedding-3-large, mistral-embed."),
+        "type": "model_not_found"}})
+
+
+@router.post("/v1/embeddings")
+async def embeddings(req: EmbeddingsRequest,
+                     client_id: str = Depends(auth.verify_bearer_key)):
+    """Vectorise du texte **après** assainissement."""
+    provider = _route_embeddings(req.model)
+
+    entrees = req.input if isinstance(req.input, list) else [req.input]
+    if not entrees:
+        raise HTTPException(status_code=400, detail={"error": {
+            "message": "`input` est vide", "type": "invalid_request_error"}})
+
+    if any(not isinstance(e, str) for e in entrees):
+        # Entrée déjà tokenisée en identifiants BPE : SENTINEL ne peut ni
+        # la lire ni la protéger. La relayer donnerait l'illusion d'une
+        # inspection qui n'a pas lieu — on refuse en le disant.
+        raise HTTPException(status_code=400, detail={"error": {
+            "message": ("SENTINEL n'accepte que du texte : une entree deja "
+                        "convertie en identifiants de tokens ne peut pas etre "
+                        "inspectee. Envoyez les chaines de caracteres."),
+            "type": "invalid_request_error"}})
+
+    propres: list[str] = []
+    for texte in entrees:
+        propre, bloque = await _assainir_texte(texte, client_id)
+        if bloque:
+            raise HTTPException(status_code=403, detail={"error": {
+                "message": ("Requete bloquee par SENTINEL : contenu "
+                            "confidentiel detecte."),
+                "type": "content_filter"}})
+        propres.append(propre)
+
+    extras = {k: v for k, v in req.model_dump(exclude_unset=True).items()
+              if k not in {"model", "input"}}
+    base = settings.openai_base if provider == "openai" else settings.mistral_base
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{base}/v1/embeddings",
+                headers={"Authorization": f"Bearer {_provider_key(provider)}"},
+                json={"model": req.model, "input": propres, **extras})
+            resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail={"error": {
+            "message": f"Erreur fournisseur {provider}", "type": "upstream_error"}})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail={"error": {
+            "message": f"Fournisseur {provider} injoignable : {type(e).__name__}",
+            "type": "upstream_unreachable"}})
+
+    # Rien à désanonymiser : la réponse ne contient que des vecteurs.
+    return resp.json()
