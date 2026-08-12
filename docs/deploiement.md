@@ -185,7 +185,8 @@ push **et chaque lundi** (les CVE apparaissent après la fusion) :
 | Scan de l'image | Trivy | Rapport SARIF publié dans l'onglet *Security* ; **échec** sur une vulnérabilité corrigeable HIGH ou CRITICAL |
 | Inventaire logiciel | Syft (CycloneDX) | SBOM publié en artefact, conservé 90 jours |
 | Chart Helm | `helm lint --strict`, `helm template` (4 combinaisons de valeurs) | Le chart doit se rendre dans tous les modes : par défaut, tout activé, sans console, avec NetworkPolicy restrictive |
-| Rendu du chart | [`valider_rendu.py`](../deploy/helm/valider_rendu.py) | Chaque Service doit viser **un seul** workload, l'ingress ne doit router que vers des Services existants, aucune règle de NetworkPolicy ne doit autoriser toutes les sources, et les garde-fous (`runAsNonRoot`, `readOnlyRootFilesystem`, mode strict) doivent rester présents |
+| Schéma des manifestes | **kubeconform** (mode strict + catalogue de CRD) | Types des champs, champs obligatoires, et **champs inconnus** : `replicaCount` au lieu de `replicas` s'appliquerait sans erreur et serait ignoré par le cluster |
+| Cohérence du chart | [`valider_rendu.py`](../deploy/helm/valider_rendu.py) | Chaque Service doit viser **un seul** workload, l'ingress ne doit router que vers des Services existants, aucune règle de NetworkPolicy ne doit autoriser toutes les sources, et les garde-fous (`runAsNonRoot`, `readOnlyRootFilesystem`, mode strict) doivent rester présents dans **toutes** les combinaisons |
 
 Le dernier point mérite d'être souligné : les garde-fous de sécurité sont
 **testés**, pas seulement écrits. Une modification qui désactiverait le
@@ -195,9 +196,20 @@ mode strict par défaut fait échouer la CI.
 > --dry-run=client`. Cette commande contacte le serveur d'API pour
 > résoudre les types : sans cluster — et un runner n'en a pas — elle
 > échoue systématiquement, y compris avec `--validate=false`. Elle ne
-> validait donc rien. Le script qui l'a remplacée travaille hors ligne,
-> et chacune de ses vérifications a été éprouvée en réintroduisant le
-> défaut qu'elle est censée attraper.
+> validait donc rien. Les deux outils qui l'ont remplacée travaillent
+> hors ligne, et chacune de leurs vérifications a été éprouvée en
+> réintroduisant le défaut qu'elle est censée attraper.
+
+Les deux validations sont **complémentaires** : un manifeste peut être
+parfaitement conforme au schéma Kubernetes et router vers un Service
+inexistant. Aucune des deux ne dispense de l'autre.
+
+Pour les rejouer en local, à l'identique :
+
+```bash
+winget install Helm.Helm YannHamon.kubeconform   # ou brew / apt
+./deploy/helm/valider.sh
+```
 
 L'image ne contient pas de compilateur : `gcc` et `g++` sont installés
 pour construire les wheels puis purgés dans la même couche.

@@ -155,8 +155,10 @@ def verifier(chemin: str) -> None:
     _verifier_services(docs)
     _verifier_ingress(docs)
     _verifier_network_policy(docs)
-    if "defaut" in chemin:
-        _verifier_garde_fous(docs)
+    # Les garde-fous valent pour TOUTES les combinaisons de valeurs, pas
+    # seulement le rendu par défaut : c'est justement en activant des
+    # options qu'on les perdrait sans s'en apercevoir.
+    _verifier_garde_fous(docs)
     kinds = sorted({d["kind"] for d in docs})
     print(f"  OK  {chemin} — {len(docs)} objets : {', '.join(kinds)}")
 

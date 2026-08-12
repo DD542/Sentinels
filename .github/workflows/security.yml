@@ -130,16 +130,44 @@ jobs:
             --set 'networkPolicy.ingressFrom[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=ingress-nginx' \
             > /tmp/rendu-netpol.yaml
 
-      # Remplace `kubectl apply --dry-run=client`, qui contacte le serveur
-      # d'API pour résoudre les types : sans cluster — et un runner n'en a
-      # pas — cette commande échoue toujours, y compris avec
-      # `--validate=false`. Elle ne validait donc rien.
+      # Deux validations complémentaires, et aucune des deux ne remplace
+      # l'autre :
       #
-      # Le script travaille sur le rendu seul et vérifie ce qui casse
-      # réellement un déploiement : Services visant les bons pods, ingress
-      # pointant vers des Services existants, règles de NetworkPolicy qui
-      # isolent vraiment, garde-fous de sécurité toujours présents.
-      - name: Valider le rendu
+      #   * kubeconform vérifie la CONFORMITÉ AU SCHÉMA Kubernetes — types
+      #     des champs, champs obligatoires, et en mode strict les champs
+      #     inconnus (une faute de frappe comme `replicaCount` au lieu de
+      #     `replicas` s'appliquerait sans erreur et serait simplement
+      #     ignorée par le cluster) ;
+      #   * valider_rendu.py vérifie la COHÉRENCE DU CHART — un manifeste
+      #     peut être parfaitement conforme au schéma et pointer vers un
+      #     Service qui n'existe pas.
+      #
+      # Les deux travaillent hors ligne. Elles remplacent
+      # `kubectl apply --dry-run=client`, qui contacte le serveur d'API
+      # pour résoudre les types : sans cluster — et un runner n'en a pas —
+      # cette commande échoue toujours, y compris avec `--validate=false`.
+      # Elle ne validait donc rien.
+      - name: Installer kubeconform
+        run: |
+          curl -sSLo /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          /tmp/kubeconform -v
+
+      - name: Conformité au schéma Kubernetes
+        # Le catalogue de CRD couvre le `ServiceMonitor` de l'opérateur
+        # Prometheus, absent du schéma standard. Sans lui il serait
+        # « skipped » — c'est-à-dire non validé, en silence.
+        run: |
+          /tmp/kubeconform -strict -summary \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            /tmp/rendu-defaut.yaml \
+            /tmp/rendu-complet.yaml \
+            /tmp/rendu-sans-console.yaml \
+            /tmp/rendu-netpol.yaml
+
+      - name: Cohérence du chart
         run: |
           pip install pyyaml
           python3 deploy/helm/valider_rendu.py \
