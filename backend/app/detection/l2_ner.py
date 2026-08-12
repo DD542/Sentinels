@@ -128,13 +128,24 @@ _SPACY_MODELS = {
 
 def _get_spacy(kind: str):
     """Charge (une fois) le modèle spaCy direct pour 'en' ou 'other'.
-    Renvoie None si aucun modèle candidat n'est installé."""
+    Renvoie None si aucun modèle candidat n'est installé.
+
+    Deux absences distinctes, et il fallait couvrir les deux : `OSError`
+    quand le *modèle* manque, `ImportError` quand **spaCy lui-même** n'est
+    pas là. Seule la première l'était : sans l'extra `[detection]`, la
+    couche remontait une `ModuleNotFoundError` au lieu de s'effacer — ce
+    qui contredisait la dégradation propre annoncée."""
     if kind in _nlp_cache:
         return _nlp_cache[kind]
     with _lock:
         if kind in _nlp_cache:
             return _nlp_cache[kind]
-        import spacy
+        try:
+            import spacy
+        except ImportError:
+            _signaler_couche_absente("spacy")
+            _nlp_cache[kind] = None
+            return None
         nlp = None
         for name in _SPACY_MODELS.get(kind, ()):
             try:
@@ -147,13 +158,41 @@ def _get_spacy(kind: str):
         return nlp
 
 
+# Sentinelle : distingue « pas encore construit » de « impossible à
+# construire ». Sans elle, chaque appel retenterait un import qui échoue.
+_INDISPONIBLE = object()
+
+
 def _get_analyzer_fr():
+    """Analyseur Presidio français, ou None s'il est indisponible."""
     global _analyzer_fr
     if _analyzer_fr is None:
         with _lock:
             if _analyzer_fr is None:
-                _analyzer_fr = _build_analyzer_fr()
-    return _analyzer_fr
+                try:
+                    _analyzer_fr = _build_analyzer_fr()
+                except ImportError:
+                    _signaler_couche_absente("presidio-analyzer")
+                    _analyzer_fr = _INDISPONIBLE
+    return None if _analyzer_fr is _INDISPONIBLE else _analyzer_fr
+
+
+_absences_signalees: set[str] = set()
+
+
+def _signaler_couche_absente(paquet: str) -> None:
+    """Une seule fois par paquet : la couche L2 est optionnelle, mais son
+    absence doit être VISIBLE. Dégrader en silence sur un outil de
+    détection, c'est laisser croire qu'un texte est propre alors qu'il
+    n'a simplement pas été analysé."""
+    if paquet in _absences_signalees:
+        return
+    _absences_signalees.add(paquet)
+    from .. import logs
+    logs.get_logger("detection").warning(
+        "couche L2 degradee : %s absent", paquet,
+        extra={"event": "l2_indisponible", "package": paquet,
+               "remede": 'pip install -e ".[detection]"'})
 
 
 # ------------------------------------------------------------
@@ -183,6 +222,8 @@ def _plausible_person(span: str, start: int, text: str) -> bool:
 
 def _scan_presidio_fr(text: str) -> list[Finding]:
     analyzer = _get_analyzer_fr()
+    if analyzer is None:
+        return []
     results = analyzer.analyze(text=text, language="fr")
     findings: list[Finding] = []
     for r in results:
@@ -235,6 +276,27 @@ def _merge(primary: list[Finding], extra: list[Finding]) -> list[Finding]:
         if not any(f.start < e.end and f.end > e.start for e in out):
             out.append(f)
     return out
+
+
+def est_disponible() -> bool:
+    """La couche L2 peut-elle analyser quoi que ce soit ?
+
+    Les tests qui portent sur la NER s'en servent pour se déclarer
+    ignorés plutôt qu'en échec quand l'extra `[detection]` n'est pas
+    installé : un test rouge pour une dépendance optionnelle absente
+    finit par être ignoré tout court, et masque les vrais rouges."""
+    return (_get_analyzer_fr() is not None
+            or _get_spacy("other") is not None
+            or _get_spacy("en") is not None)
+
+
+def _reset_caches() -> None:
+    """Utilisé par les tests ; en production les modèles sont chargés une
+    fois pour toutes."""
+    global _analyzer_fr
+    _nlp_cache.clear()
+    _analyzer_fr = None
+    _absences_signalees.clear()
 
 
 def scan_sync(text: str) -> list[Finding]:

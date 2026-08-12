@@ -21,12 +21,27 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # L'extra `[detection]` est indispensable, pas confortable : sans
+      # spaCy ni Presidio, la couche L2 s'efface et la CI ne testerait
+      # PAS ce qui fait le produit. Les modèles de langue sont déclarés
+      # dans l'extra, `pip` les installe donc avec.
       - name: Install dependencies
         working-directory: backend
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
+          pip install -e ".[detection]"
           pip install -e ".[dev]"
+
+      - name: Vérifier que la couche de détection est bien là
+        # Sinon les tests concernés se déclareraient « ignorés » et la CI
+        # passerait au vert sans avoir rien vérifié.
+        working-directory: backend
+        run: |
+          python -c "
+          from app.detection import l2_ner
+          assert l2_ner.est_disponible(), 'couche L2 absente'
+          print('couche L2 disponible')
+          "
 
       - name: Run tests
         working-directory: backend

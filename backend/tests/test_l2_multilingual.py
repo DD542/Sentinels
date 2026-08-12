@@ -30,6 +30,16 @@ def _types(findings):
     return {f.entity_type for f in findings}
 
 
+# La NER a besoin de l'extra `[detection]` (spaCy, Presidio, modèles).
+# Sans lui ces tests seraient rouges pour une dépendance optionnelle
+# absente — et un rouge permanent finit par être ignoré, ce qui masque
+# les vrais. La CI, elle, installe l'extra : ils y sont bien exécutés.
+besoin_ner = pytest.mark.skipif(
+    not l2_ner.est_disponible(),
+    reason='couche L2 absente — pip install -e ".[detection]"')
+
+
+@besoin_ner
 class TestMultilingualNER:
     def test_personne_et_lieu_anglais(self):
         f = l2_ner.scan_sync("Write an email to John Smith who lives in London")
