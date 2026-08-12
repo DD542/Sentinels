@@ -30,7 +30,27 @@ Aucun Secret n'est référencé ({{ "secrets.existingSecret" }} vide et
     --from-literal=database_url='postgresql://…'
 {{- end }}
 
-Accès local :
+{{ if and .Values.config.strictMode (not .Values.config.corsOrigins) -}}
+ATTENTION : `config.corsOrigins` est vide et le mode strict est actif —
+les pods refuseront de démarrer. Indiquez l'origine exacte de la console,
+par exemple https://sentinel.mondomaine.fr (jamais `*` : la console
+s'authentifie par cookie).
+{{- end }}
+
+{{ if .Values.dashboard.enabled -}}
+Console d'administration :
+
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "sentinel.fullname" . }}-dashboard 8080:{{ .Values.dashboard.service.port }}
+  # puis http://localhost:8080
+
+Elle relaie l'API sur `/api`, donc sur la même origine : rien à ouvrir
+côté CORS tant que vous ne la déplacez pas sur un autre domaine.
+{{- else -}}
+Console désactivée (`dashboard.enabled=false`) : l'API est déployée
+seule.
+{{- end }}
+
+Accès direct à l'API :
 
   kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "sentinel.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
   curl http://localhost:{{ .Values.service.port }}/health

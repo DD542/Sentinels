@@ -1,0 +1,57 @@
+server {
+    listen 8080;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # L'origine amont est injectee au demarrage (envsubst, entrypoint
+    # nginx). Elle vaut `backend:8000` sous docker-compose et le nom du
+    # Service Kubernetes sous Helm : la meme image sert dans les deux cas.
+    # Sans ca, le nom d'hote etait fige dans l'image et le chart Helm ne
+    # pouvait pas deployer la console.
+    #
+    # Le nom passe par une VARIABLE, et pas directement dans proxy_pass.
+    # La difference est un mode de panne : avec un nom litteral, nginx
+    # resout au chargement de la configuration et REFUSE DE DEMARRER si
+    # la resolution echoue. La console tombait alors en boucle de
+    # redemarrage parce que l'API n'etait pas encore la — alors qu'elle
+    # n'a besoin de personne pour servir ses fichiers. Avec une variable,
+    # la resolution a lieu a chaque requete : la console demarre, sert la
+    # page, et repond 502 sur /api tant que l'API manque.
+    resolver ${NGINX_LOCAL_RESOLVERS} valid=30s;
+    set $sentinel_api "${SENTINEL_API_UPSTREAM}";
+
+    # SPA : toutes les routes non-fichiers renvoient index.html
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Proxy WebSocket pour le dashboard temps reel. DOIT preceder le bloc
+    # /api/ : seule cette location porte les en-tetes de bascule de
+    # protocole, et nginx retient le prefixe le plus long.
+    location /api/dashboard/ws {
+        rewrite ^/api(/.*)$ $1 break;
+        proxy_pass $sentinel_api;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 3600s;      # le flux reste ouvert
+    }
+
+    # Proxy API vers le backend. Meme origine que la console : aucun CORS
+    # a ouvrir, et le cookie de session reste SameSite.
+    location /api/ {
+        rewrite ^/api(/.*)$ $1 break;
+        proxy_pass $sentinel_api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # Le streaming SSE de /v1/chat/completions doit sortir au fil de
+        # l'eau : sans ca, nginx tamponne et l'utilisateur attend la fin.
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+    }
+}

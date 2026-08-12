@@ -48,9 +48,20 @@ Operator, Vault, SOPS) qui produit ce même Secret.
 helm install sentinel deploy/helm/sentinel \
   -n sentinel \
   --set secrets.existingSecret=sentinel \
-  --set image.repository=ghcr.io/dd542/sentinel \
-  --set image.tag=0.1.0
+  --set image.tag=0.1.0 \
+  --set config.corsOrigins=https://sentinel.mondomaine.fr \
+  --set ingress.enabled=true \
+  --set ingress.hosts[0].host=sentinel.mondomaine.fr
 ```
+
+Le chart déploie **l'API et la console**. Un seul nom d'hôte suffit : les
+chemins de l'API (`/v1`, `/gateway`, `/admin`, `/auth`…) vont au backend,
+tout le reste à la console. La console relaie elle-même `/api` vers
+l'API — donc sur la même origine, ce qui évite d'ouvrir le CORS et
+conserve un cookie de session `SameSite`.
+
+`dashboard.enabled=false` déploie l'API seule (intégration par API
+uniquement, sans interface).
 
 ### 3. Vérifier
 
@@ -58,6 +69,9 @@ helm install sentinel deploy/helm/sentinel \
 kubectl -n sentinel get pods
 kubectl -n sentinel port-forward svc/sentinel 8000:8000
 curl -s localhost:8000/health
+
+# La console
+kubectl -n sentinel port-forward svc/sentinel-dashboard 8080:80
 ```
 
 ## Ce que le chart applique
@@ -76,6 +90,59 @@ curl -s localhost:8000/health
 Options désactivées par défaut, à activer selon votre contexte :
 `ingress`, `autoscaling`, `serviceMonitor` (Prometheus Operator) et
 `networkPolicy`.
+
+## Origines autorisées (CORS)
+
+`config.corsOrigins` liste les origines autorisées à appeler l'API depuis
+un navigateur. **En mode strict, un déploiement sans cette valeur refuse
+de démarrer** : le défaut n'autorise que `localhost`, et une console
+servie sur votre domaine se heurterait à un blocage CORS silencieux.
+
+```yaml
+config:
+  corsOrigins: "https://sentinel.mondomaine.fr"
+```
+
+Deux règles :
+
+- Tant que la console est servie par ce chart, elle relaie l'API sur la
+  **même origine** : le CORS n'entre pas en jeu pour son propre trafic.
+  La valeur reste néanmoins exigée, car d'autres applications internes
+  appellent l'API depuis un navigateur.
+- **`*` est refusé.** La console s'authentifie par cookie ; une origine
+  joker laisserait n'importe quel site visité par un administrateur
+  connecté piloter sa session. Les navigateurs rejettent d'ailleurs la
+  combinaison — mais silencieusement, ce qui fait chercher la panne
+  ailleurs pendant des heures.
+
+## Clés de vault par client (BYOK)
+
+Chaque client a sa propre clé de chiffrement du vault. Par défaut elle
+est **dérivée** de `vault_master_key` (HKDF-SHA256, `info` = identifiant
+du client) : le cloisonnement entre organisations devient une propriété
+cryptographique et non plus une simple clause `WHERE`. Une erreur de
+filtrage renvoie alors des lignes illisibles au lieu de données en clair.
+
+Un client peut fournir **sa** clé. SENTINEL ne peut alors plus lire son
+vault, même avec un accès complet à la base :
+
+```bash
+kubectl -n sentinel create secret generic sentinel-byok \
+  --from-literal=vault_client_keys='{"acme-corp":"<64 caractères hex>"}'
+```
+
+```yaml
+extraEnv:
+  - name: vault_client_keys
+    valueFrom:
+      secretKeyRef: {name: sentinel-byok, key: vault_client_keys}
+```
+
+> **À dire au client avant, pas après.** Cette clé perdue, son vault est
+> irrécupérable — c'est le prix exact de la garantie qu'il achète. Les
+> jetons expirent en `VAULT_TTL_HOURS` (24 h par défaut), donc la perte
+> est bornée à une journée d'interactions, pas au journal d'audit, qui
+> possède son propre chiffrement.
 
 ## Supervision
 
@@ -128,12 +195,12 @@ dépôt et n'a pas été substituée :
 cosign verify \
   --certificate-identity-regexp '^https://github.com/DD542/Sentinels/.github/workflows/release.yml@' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ghcr.io/dd542/sentinels@sha256:<digest>
+  ghcr.io/dd542/sentinel@sha256:<digest>
 ```
 
 ```bash
 # Provenance SLSA et SBOM attesté (CLI GitHub)
-gh attestation verify oci://ghcr.io/dd542/sentinels@sha256:<digest> \
+gh attestation verify oci://ghcr.io/dd542/sentinel@sha256:<digest> \
   --repo DD542/Sentinels
 ```
 
@@ -141,12 +208,17 @@ gh attestation verify oci://ghcr.io/dd542/sentinels@sha256:<digest> \
 # Contenu du SBOM
 cosign download attestation \
   --predicate-type https://cyclonedx.org/bom \
-  ghcr.io/dd542/sentinels@sha256:<digest>
+  ghcr.io/dd542/sentinel@sha256:<digest>
 ```
 
 Le workflow **scanne avant de signer** et **vérifie sa propre
 signature** après publication : on ne signe pas une image vulnérable, et
 une signature qu'on ne sait pas vérifier ne prouve rien.
+
+Les **deux** images suivent cette chaîne : `ghcr.io/dd542/sentinel` et
+`ghcr.io/dd542/sentinel-dashboard`. Une console non signée pendant que
+l'API l'est laisserait sans preuve le composant qui reçoit les
+identifiants des administrateurs.
 
 ## Limites connues du déploiement
 

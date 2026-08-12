@@ -116,12 +116,47 @@ jobs:
             --set secrets.values.auditHmacKey=test \
             > /tmp/rendu-complet.yaml
 
+      - name: Rendu sans la console
+        run: |
+          helm template sentinel deploy/helm/sentinel \
+            --set dashboard.enabled=false \
+            --set ingress.enabled=true \
+            > /tmp/rendu-sans-console.yaml
+
       - name: Vérifier que le rendu est du Kubernetes valide
         run: |
-          for f in /tmp/rendu-defaut.yaml /tmp/rendu-complet.yaml; do
+          for f in /tmp/rendu-defaut.yaml /tmp/rendu-complet.yaml \
+                   /tmp/rendu-sans-console.yaml; do
             echo "--- $f"
             kubectl apply --dry-run=client -f "$f" >/dev/null && echo "OK"
           done
+
+      - name: Le Service de l'API ne doit pas viser la console
+        # Les deux composants partagent les labels name/instance. Un
+        # sélecteur qui s'arrête là enverrait du trafic d'API vers nginx
+        # et ferait scruter /metrics sur la console.
+        run: |
+          python3 - <<'PY'
+          import re
+          rendu = open("/tmp/rendu-complet.yaml").read()
+          blocs = [b for b in rendu.split("---") if b.strip()]
+          services = [b for b in blocs if re.search(r"^kind: Service$", b, re.M)]
+          api = [b for b in services if "-dashboard" not in b]
+          assert api, "Service de l'API absent du rendu"
+          for b in api:
+              assert "app.kubernetes.io/component: api" in b, \
+                  "le Service de l'API n'est pas cloisonne par composant"
+          assert any("-dashboard" in b for b in services), \
+              "Service de la console absent du rendu"
+          print("cloisonnement des selecteurs verifie")
+          PY
+
+      - name: La console doit être servie sur le même hôte que l'API
+        run: |
+          grep -q "sentinel-dashboard" /tmp/rendu-complet.yaml
+          # Sans console, l'ingress doit retomber entièrement sur l'API.
+          ! grep -q "\-dashboard" /tmp/rendu-sans-console.yaml
+          echo "Routage de l'ingress coherent dans les deux modes"
 
       - name: Vérifier les garde-fous de sécurité du chart
         run: |

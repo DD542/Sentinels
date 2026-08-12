@@ -23,6 +23,33 @@ service:
   port: 8000
 
 # ---------------------------------------------------------------
+# Console d'administration
+#
+# Elle sert aussi de proxy vers l'API sur la MÊME origine (`/api`) :
+# aucun CORS à ouvrir, et le cookie de session reste `SameSite`.
+# ---------------------------------------------------------------
+dashboard:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: ghcr.io/dd542/sentinel-dashboard
+    tag: ""                   # vide = appVersion du Chart
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 80
+  # Image nginx non privilégiée : écoute sur 8080, tourne en UID 101.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 101
+    runAsGroup: 101
+    seccompProfile:
+      type: RuntimeDefault
+  resources:
+    requests: {cpu: 10m, memory: 32Mi}
+    limits: {cpu: 200m, memory: 128Mi}
+
+# ---------------------------------------------------------------
 # Configuration applicative (non secrète)
 # ---------------------------------------------------------------
 config:
@@ -41,6 +68,13 @@ config:
   # conteneur. À aligner sur `resources.limits.cpu`.
   detectionWorkers: 0
   ollamaBaseUrl: ""           # juge local L4 (optionnel)
+  # Origines autorisées à appeler l'API depuis un navigateur, séparées
+  # par des virgules. Inutile si la console est servie par ce chart
+  # (elle relaie l'API sur la même origine) ; obligatoire en mode strict
+  # dès que la console vit sur un autre domaine.
+  # Le mode strict REFUSE de démarrer si cette valeur est vide : le
+  # défaut n'autorise que localhost, la console serait injoignable.
+  corsOrigins: "https://sentinel.example.com"
 
 # ---------------------------------------------------------------
 # Secrets
@@ -124,15 +158,29 @@ podDisruptionBudget:
   enabled: true
   minAvailable: 1
 
+# Un seul nom d'hôte pour l'API et la console. Les chemins listés dans
+# `apiPaths` vont au backend, tout le reste à la console : le contrôleur
+# retient le chemin le plus long, donc `/` ne capture pas `/v1`.
 ingress:
   enabled: false
   className: ""
   annotations: {}
   hosts:
     - host: sentinel.example.com
-      paths:
-        - path: /
-          pathType: Prefix
+      apiPaths:
+        - /v1              # surface compatible OpenAI (chat, models, embeddings)
+        - /gateway
+        - /admin
+        - /auth            # retour du fournisseur d'identité (OIDC)
+        - /compliance
+        - /corpus
+        - /policy
+        - /audit
+        - /dashboard
+        - /health
+        - /metrics
+        - /docs
+        - /openapi.json
   tls: []
 
 # Expose /metrics au Prometheus Operator (CRD ServiceMonitor requis).

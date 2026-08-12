@@ -2,6 +2,8 @@ from __future__ import annotations
 import base64
 import hashlib
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from .config import get_settings
 
@@ -11,19 +13,94 @@ _pool = None
 _ENABLED = bool(settings.database_url)
 
 
+# ============================================================
+# Chiffrement du vault : une clé PAR CLIENT
+# ============================================================
+#
+# Le vault était chiffré avec une clé unique. Le cloisonnement entre
+# organisations n'existait alors qu'au niveau logique — une clause SQL.
+# Or c'est précisément une erreur de cloisonnement logique qui a déjà
+# livré à un client les données d'un autre : une requête sans filtre
+# rendait des lignes lisibles.
+#
+# Avec une clé par client, la même erreur ne rend plus rien : la ligne
+# revient, mais elle ne se déchiffre pas. Le contrôle passe d'une
+# convention de codage à une propriété cryptographique.
+#
+# Deux origines possibles pour cette clé :
+#
+#   * **dérivée** de la clé maître (défaut) — défense en profondeur
+#     contre les erreurs de cloisonnement. L'exploitant de SENTINEL
+#     conserve la capacité de déchiffrer ;
+#   * **fournie par le client** (`vault_client_keys`) — le client garde
+#     sa clé. L'exploitant ne peut alors PAS lire son vault, même avec
+#     un accès complet à la base. C'est la réponse à la question que
+#     pose tout service achats : « vos équipes peuvent-elles lire nos
+#     données ? »
+
+_HKDF_SALT = b"sentinel-vault-partition-v1"
+_cle_par_client: dict[str, Fernet] = {}
+
+
+def _derive(secret: bytes, info: bytes) -> bytes:
+    return HKDF(algorithm=hashes.SHA256(), length=32,
+                salt=_HKDF_SALT, info=info).derive(secret)
+
+
 def _fernet() -> Fernet:
-    """Clé de chiffrement au repos dérivée de la clé maître du vault."""
+    """Clé historique, dérivée de la seule clé maître.
+
+    Conservée pour relire les lignes écrites avant le cloisonnement.
+    Comme le vault expire en `VAULT_TTL_HOURS` (24 h par défaut), ce
+    repli cesse naturellement d'être sollicité après une journée."""
     raw = hashlib.sha256(bytes.fromhex(settings.vault_master_key)).digest()
     return Fernet(base64.urlsafe_b64encode(raw))
 
 
-def encrypt(plaintext: str) -> str:
-    return _fernet().encrypt(plaintext.encode()).decode()
+def _client_fernet(client_id: str) -> Fernet:
+    cache = _cle_par_client.get(client_id)
+    if cache is not None:
+        return cache
+
+    fournie = settings.vault_key_for(client_id)
+    if fournie:
+        # Clé du client : jamais dérivée de la nôtre, sinon la promesse
+        # « vous seul pouvez déchiffrer » serait fausse.
+        brut = _derive(bytes.fromhex(fournie), b"client-supplied")
+    else:
+        brut = _derive(bytes.fromhex(settings.vault_master_key),
+                       client_id.encode())
+
+    cle = Fernet(base64.urlsafe_b64encode(brut))
+    _cle_par_client[client_id] = cle
+    return cle
 
 
-def decrypt(ciphertext: str) -> str | None:
+def _reset_key_cache() -> None:
+    """Utilisé par les tests et après un changement de configuration."""
+    _cle_par_client.clear()
+
+
+def encrypt(plaintext: str, client_id: str) -> str:
+    return _client_fernet(client_id).encrypt(plaintext.encode()).decode()
+
+
+def decrypt(ciphertext: str, client_id: str) -> str | None:
+    """Déchiffre avec la clé du client.
+
+    Le repli sur la clé historique ne relit que les lignes antérieures au
+    cloisonnement. Il ne crée aucun passage entre clients : une ligne
+    chiffrée pour le client A avec SA clé reste illisible pour B."""
+    donnee = ciphertext.encode()
     try:
-        return _fernet().decrypt(ciphertext.encode()).decode()
+        return _client_fernet(client_id).decrypt(donnee).decode()
+    except (InvalidToken, ValueError):
+        pass
+    if settings.vault_key_for(client_id):
+        # Client à clé propre : aucun repli possible ni souhaitable.
+        return None
+    try:
+        return _fernet().decrypt(donnee).decode()
     except (InvalidToken, ValueError):
         return None
 

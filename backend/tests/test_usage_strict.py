@@ -80,10 +80,32 @@ class TestStrictMode:
         assert "admin_token" in msg
         assert "dashboard_token" in msg
 
-    def test_complete_posture_accepted(self, monkeypatch):
+    def _posture_complete(self, monkeypatch):
         monkeypatch.setattr(settings, "database_url", "postgresql://x")
         monkeypatch.setattr(settings, "vault_master_key", "a" * 64)
         monkeypatch.setattr(settings, "audit_hmac_key", "b" * 64)
         monkeypatch.setattr(settings, "admin_token", "tok-admin")
         monkeypatch.setattr(settings, "dashboard_token", "tok-dash")
+        monkeypatch.setattr(settings, "cors_origins",
+                            "https://sentinel.exemple.fr")
+
+    def test_complete_posture_accepted(self, monkeypatch):
+        self._posture_complete(monkeypatch)
         enforce_strict_mode()  # ne doit pas lever
+
+    def test_cors_par_defaut_refuse(self, monkeypatch):
+        """Le defaut n'autorise que localhost : demarrer en production
+        avec, c'est livrer une console injoignable depuis son domaine."""
+        self._posture_complete(monkeypatch)
+        monkeypatch.setattr(settings, "cors_origins", "")
+        with pytest.raises(RuntimeError, match="cors_origins"):
+            enforce_strict_mode()
+
+    def test_cors_joker_refuse(self, monkeypatch):
+        """`*` est doublement mauvais : les navigateurs le rejettent avec
+        des requetes authentifiees, et le silence de ce rejet ferait
+        chercher la panne pendant des heures."""
+        self._posture_complete(monkeypatch)
+        monkeypatch.setattr(settings, "cors_origins", "*")
+        with pytest.raises(RuntimeError, match="joker|'\\*'"):
+            enforce_strict_mode()

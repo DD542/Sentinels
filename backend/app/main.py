@@ -48,6 +48,15 @@ def enforce_strict_mode() -> None:
         problems.append("admin_token non defini")
     if not settings.dashboard_token:
         problems.append("dashboard_token non defini")
+    if not settings.cors_origins:
+        problems.append(
+            "cors_origins non defini (le defaut n'autorise que localhost : "
+            "la console serait injoignable depuis votre domaine)")
+    else:
+        try:
+            settings.effective_cors_origins
+        except ValueError as e:
+            problems.append(str(e))
     if problems:
         raise RuntimeError(
             "SENTINEL_STRICT : demarrage refuse — " + " ; ".join(problems))
@@ -98,12 +107,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
+# Origines configurables : sans ça, déployer la console sur un vrai
+# domaine imposait d'éditer le code source. La liste reste EXPLICITE —
+# jamais `*` : la console s'authentifie par cookie, et une origine joker
+# laisserait n'importe quel site piloter la session d'un administrateur.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173", "http://127.0.0.1:5173",
-        "http://localhost:5174", "http://127.0.0.1:5174",
-    ],
+    allow_origins=settings.effective_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

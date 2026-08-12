@@ -1,3 +1,4 @@
+import json
 from functools import lru_cache
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -35,6 +36,16 @@ class Settings(BaseSettings):
     # Clés cryptographiques (32 octets hex chacune ; openssl rand -hex 32)
     vault_master_key: str = "0" * 64
     audit_hmac_key: str = "1" * 64
+    # Clés de vault fournies par les clients (BYOK), au format JSON :
+    #   {"client-a": "<64 hex>", "client-b": "<64 hex>"}
+    #
+    # Par défaut, la clé de chaque client est DÉRIVÉE de la clé maître :
+    # le cloisonnement est cryptographique, mais l'exploitant de SENTINEL
+    # peut toujours déchiffrer. Un client qui fournit la sienne devient
+    # le seul à pouvoir lire son vault — y compris face à un accès
+    # complet à la base. Corollaire à dire clairement : cette clé perdue,
+    # le vault du client est irrécupérable.
+    vault_client_keys: str = ""
     # Token d'administration (création de clés clients). Distinct des clés
     # cryptographiques : une clé HMAC sert à signer, jamais à s'authentifier.
     # Vide = repli sur audit_hmac_key (compatibilité installations existantes).
@@ -69,6 +80,16 @@ class Settings(BaseSettings):
     session_ttl_hours: int = 8
     # Cookie `Secure` : à laisser vrai partout sauf en HTTP local.
     session_cookie_secure: bool = True
+    # Origines autorisées à appeler l'API depuis un navigateur, séparées
+    # par des virgules (ex. "https://sentinel.monentreprise.fr").
+    #
+    # Vide = origines de développement local uniquement. Ce défaut est
+    # volontairement inutilisable en production : le mode strict refuse
+    # de démarrer sans configuration explicite. Un CORS permissif est une
+    # faille discrète — n'importe quel site visité par un administrateur
+    # connecté pourrait piloter la console à son insu, cookie de session
+    # compris.
+    cors_origins: str = ""
     # Format des logs : "json" (production, une ligne JSON par événement)
     # ou "text" (lisible, dev local).
     log_format: str = "json"
@@ -111,6 +132,65 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return v.strip().strip("\r\n")
         return v
+
+    # Origines de développement. 127.0.0.1 *et* localhost : sur Windows,
+    # localhost peut résoudre en IPv6 et le navigateur enverrait alors
+    # une origine différente de celle attendue.
+    DEV_ORIGINS: tuple[str, ...] = (
+        "http://localhost:5173", "http://127.0.0.1:5173",
+        "http://localhost:5174", "http://127.0.0.1:5174",
+    )
+
+    @property
+    def effective_cors_origins(self) -> list[str]:
+        """Liste effective des origines autorisées.
+
+        `*` n'est jamais accepté : combiné à `allow_credentials`, il est
+        de toute façon rejeté par les navigateurs, et le silence de ce
+        rejet ferait chercher la panne pendant des heures."""
+        origines = [o.strip().rstrip("/")
+                    for o in self.cors_origins.split(",") if o.strip()]
+        if not origines:
+            return list(self.DEV_ORIGINS)
+        if "*" in origines:
+            raise ValueError(
+                "cors_origins ne peut pas valoir '*' : la console utilise "
+                "un cookie de session, et les navigateurs refusent "
+                "l'origine joker avec des requetes authentifiees. "
+                "Indiquez les origines exactes.")
+        return origines
+
+    @property
+    def client_vault_keys(self) -> dict[str, str]:
+        """Clés BYOK, validées. Une entrée mal formée est REFUSÉE plutôt
+        qu'ignorée : la traiter comme absente ferait silencieusement
+        retomber le client sur la clé dérivée — il croirait détenir la
+        seule copie de sa clé alors que non."""
+        if not self.vault_client_keys.strip():
+            return {}
+        try:
+            brut = json.loads(self.vault_client_keys)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"vault_client_keys n'est pas du JSON : {e}")
+        if not isinstance(brut, dict):
+            raise ValueError(
+                'vault_client_keys doit etre un objet {"client": "<hex>"}')
+        out = {}
+        for client, cle in brut.items():
+            if not isinstance(cle, str) or len(cle) != 64:
+                raise ValueError(
+                    f"vault_client_keys[{client}] : 64 caracteres "
+                    "hexadecimaux attendus (openssl rand -hex 32)")
+            try:
+                bytes.fromhex(cle)
+            except ValueError:
+                raise ValueError(
+                    f"vault_client_keys[{client}] n'est pas hexadecimal")
+            out[str(client)] = cle
+        return out
+
+    def vault_key_for(self, client_id: str) -> str | None:
+        return self.client_vault_keys.get(client_id)
 
     @property
     def effective_admin_token(self) -> str:

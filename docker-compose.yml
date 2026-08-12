@@ -12,6 +12,9 @@ services:
       - dashboard_token=${DASHBOARD_TOKEN:-}
       - rate_limit_per_minute=${RATE_LIMIT_PER_MINUTE:-120}
       - ollama_base_url=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      # La console passe par le proxy nginx (meme origine) : CORS inutile
+      # ici. A renseigner si vous exposez l'API sur un autre domaine.
+      - cors_origins=${CORS_ORIGINS:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
@@ -22,7 +25,11 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "8080:80"
+      # L'image non privilegiee ecoute sur 8080 (un port < 1024 exigerait
+      # des capacites root).
+      - "8080:8080"
+    environment:
+      - SENTINEL_API_UPSTREAM=http://backend:8000
     depends_on:
       - backend
     restart: unless-stopped

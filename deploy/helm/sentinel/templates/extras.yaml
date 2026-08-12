@@ -33,7 +33,7 @@ spec:
   minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
   selector:
     matchLabels:
-      {{- include "sentinel.selectorLabels" . | nindent 6 }}
+      {{- include "sentinel.apiSelectorLabels" . | nindent 6 }}
 {{- end }}
 
 {{- if .Values.serviceMonitor.enabled }}
@@ -48,9 +48,11 @@ metadata:
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
+  # Le composant est indispensable : sans lui, Prometheus scruterait
+  # /metrics sur la console, qui ne l'expose pas.
   selector:
     matchLabels:
-      {{- include "sentinel.selectorLabels" . | nindent 6 }}
+      {{- include "sentinel.apiSelectorLabels" . | nindent 6 }}
   endpoints:
     - port: http
       path: /metrics
@@ -68,10 +70,21 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      {{- include "sentinel.selectorLabels" . | nindent 6 }}
+      {{- include "sentinel.apiSelectorLabels" . | nindent 6 }}
   policyTypes:
     - Ingress
   ingress:
+    {{- if .Values.dashboard.enabled }}
+    # La console relaie l'API : lui fermer la porte la rendrait muette.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "sentinel.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: dashboard
+      ports:
+        - protocol: TCP
+          port: 8000
+    {{- end }}
     - from:
         {{- toYaml .Values.networkPolicy.ingressFrom | nindent 8 }}
       ports:

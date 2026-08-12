@@ -14,7 +14,7 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "sentinel.selectorLabels" . | nindent 8 }}
+        {{- include "sentinel.apiSelectorLabels" . | nindent 8 }}
       annotations:
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -60,6 +60,8 @@ spec:
               value: {{ .Values.config.streamNative | quote }}
             - name: detection_workers
               value: {{ .Values.config.detectionWorkers | quote }}
+            - name: cors_origins
+              value: {{ .Values.config.corsOrigins | quote }}
             {{- with .Values.config.ollamaBaseUrl }}
             - name: ollama_base_url
               value: {{ . | quote }}

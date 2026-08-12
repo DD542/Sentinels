@@ -1,4 +1,15 @@
 {{- if .Values.ingress.enabled }}
+{{/*
+Un seul nom d'hôte pour tout le produit.
+
+Les chemins de l'API vont au backend ; tout le reste va à la console.
+La spécification Ingress impose au contrôleur de retenir le chemin le
+PLUS LONG qui correspond : `/` ne capture donc pas `/v1`.
+
+Aucune réécriture de chemin n'est utilisée — elles diffèrent d'un
+contrôleur à l'autre (nginx, Traefik, HAProxy) et un chart qui en dépend
+ne s'installe que sur celui pour lequel il a été écrit.
+*/}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -22,9 +33,26 @@ spec:
     - host: {{ .host | quote }}
       http:
         paths:
-          {{- range .paths }}
-          - path: {{ .path }}
-            pathType: {{ .pathType }}
+          {{- range .apiPaths }}
+          - path: {{ . }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "sentinel.fullname" $ }}
+                port:
+                  number: {{ $.Values.service.port }}
+          {{- end }}
+          {{- if $.Values.dashboard.enabled }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "sentinel.fullname" $ }}-dashboard
+                port:
+                  number: {{ $.Values.dashboard.service.port }}
+          {{- else }}
+          - path: /
+            pathType: Prefix
             backend:
               service:
                 name: {{ include "sentinel.fullname" $ }}

@@ -89,7 +89,7 @@ class TestVaultReload:
         token = await fpe.tokenize_async(IBAN, EntityType.IBAN)
         cipher = fake_db[token]["cipher"]
         assert IBAN not in cipher
-        assert db.decrypt(cipher) == IBAN
+        assert db.decrypt(cipher, fpe.DEFAULT_CLIENT) == IBAN
 
     async def test_token_expire_non_restaure(self, fake_db):
         """Passe la retention : la valeur n'est plus restaurable."""

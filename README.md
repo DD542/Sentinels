@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/DD542/sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/DD542/sentinel/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-405%20passed-brightgreen)](https://github.com/DD542/sentinel)
+[![Tests](https://img.shields.io/badge/tests-430%20passed-brightgreen)](https://github.com/DD542/sentinel)
 [![Benchmark](https://img.shields.io/badge/detection%20F1-100%25-brightgreen)](https://github.com/DD542/sentinel)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -72,7 +72,7 @@ Benchmark sur **89 prompts étiquetés** (`backend/tests/benchmark.py`) :
 | **Global** | **100 %** | **100 %** | **100 %** |
 
 **42 prompts innocents traités sans aucun faux positif.** Latence moyenne : ~100 ms/prompt.
-Suite de tests : **405 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
+Suite de tests : **430 tests unitaires, d'intégration et d'API, tous verts** en CI sur Python 3.11 et 3.12.
 
 > Ces chiffres portent sur le jeu de test fourni, qui couvre les formats structurés, l'obfuscation (base64, hexadécimal, espacement) et les tentatives d'évasion. Ils ne constituent pas une garantie de détection exhaustive — voir [Limites connues](#limites-connues).
 
@@ -111,7 +111,7 @@ python tests/benchmark_external.py --rows 1000 --json
 
 **Détection en profondeur (5 couches).** Chaque couche dégrade proprement si indisponible. Un IBAN est validé par registre SWIFT *et* clé mod-97, une carte par Luhn, un NIR par sa clé de contrôle. Les noms passent par Presidio avec des garde-fous anti-faux-positifs (un verbe capitalisé en début de phrase n'est pas un prénom).
 
-**Vault cloisonné par client.** La table de correspondance jeton → valeur réelle est **partitionnée par organisation** : la réponse d'un fournisseur destinée à un client ne peut jamais être restaurée avec les données d'un autre. Vérifié en mémoire et via la base.
+**Vault cloisonné par client, et chiffré par client.** La table de correspondance jeton → valeur réelle est **partitionnée par organisation**, et chaque organisation possède **sa propre clé de chiffrement** (dérivée par HKDF-SHA256, ou fournie par le client). Le cloisonnement ne repose donc pas sur une clause `WHERE` : même une requête défaillante qui renverrait les lignes d'un autre client ne rendrait rien de lisible. Vérifié en mémoire, via la base, et en simulant une requête sans filtre.
 
 **Tokenisation à format préservé (FPE).** Un IBAN réel devient un IBAN factice **structurellement valide** — clé mod-97 recalculée, format et espacement conservés. `Jean Dupont` devient `Hugo Blanc` : faux, mais **du bon genre**, pour que l'IA ne réponde pas « Madame Jean Dupont ».
 
@@ -360,11 +360,24 @@ en système de fichiers en lecture seule, capacités Linux supprimées, jeton
 de ServiceAccount non monté, sondes de démarrage adaptées au chargement du
 modèle de langue.
 
+Il déploie **l'API et la console** derrière un seul nom d'hôte. La console
+relaie l'API sur la même origine (`/api`) : aucun CORS à ouvrir, et le
+cookie de session reste `SameSite`.
+
 ```bash
 kubectl -n sentinel create secret generic sentinel   --from-literal=vault_master_key=$(openssl rand -hex 32)   --from-literal=audit_hmac_key=$(openssl rand -hex 32)   --from-literal=admin_token=$(openssl rand -hex 24)   --from-literal=dashboard_token=$(openssl rand -hex 24)   --from-literal=database_url='postgresql://…'
 
-helm install sentinel deploy/helm/sentinel -n sentinel   --set secrets.existingSecret=sentinel
+helm install sentinel deploy/helm/sentinel -n sentinel   --set secrets.existingSecret=sentinel   --set config.corsOrigins=https://sentinel.mondomaine.fr   --set ingress.enabled=true --set ingress.hosts[0].host=sentinel.mondomaine.fr
 ```
+
+**Le vault est cloisonné cryptographiquement.** Chaque client a sa propre
+clé, dérivée de la clé maître par HKDF-SHA256. Le cloisonnement cesse
+ainsi de reposer sur une clause `WHERE` : une erreur de filtrage renvoie
+des lignes **illisibles** au lieu de données en clair. Un client peut
+aussi fournir sa propre clé (`vault_client_keys`) — SENTINEL ne peut
+alors plus lire son vault, même avec un accès complet à la base. C'est la
+réponse à la question que pose tout service achats : *vos équipes
+peuvent-elles lire nos données ?*
 
 **Chaîne d'approvisionnement.** Un outil de sécurité doit être exemplaire
 sur la sienne : `pip-audit` sur les dépendances, **Trivy** sur l'image
@@ -382,7 +395,7 @@ Guide complet : [`docs/deploiement.md`](docs/deploiement.md).
 ```bash
 cd backend
 
-pytest tests/ -v                                    # 405 tests
+pytest tests/ -v                                    # 430 tests
 pytest tests/ --cov=app --cov-report=term-missing   # couverture
 python tests/benchmark.py                           # métriques de détection (jeu interne)
 python tests/benchmark_external.py                  # benchmark externe (ai4privacy FR)
@@ -420,7 +433,7 @@ Ces limites sont documentées **parce qu'elles existent dans toutes les solution
 - [x] Dashboard temps réel Vue 3 + WebSocket
 - [x] Registre Shadow AI (souveraineté des fournisseurs)
 - [x] Persistance Postgres validée (clés et audit survivent aux redémarrages)
-- [x] Suite de 405 tests, dont 66 tests d'intégration API (TestClient FastAPI)
+- [x] Suite de 430 tests, dont 66 tests d'intégration API (TestClient FastAPI)
 - [x] Endpoint compatible OpenAI : tous rôles assainis, réponse désanonymisée, `usage` réel remonté
 - [x] Token admin dédié (`ADMIN_TOKEN`), comparaison en temps constant
 - [x] Révocation de clés par client (`/admin/keys/revoke`, scellée dans l'audit) et rate-limiting par client (fenêtre glissante, `RATE_LIMIT_PER_MINUTE`)
@@ -631,7 +644,7 @@ cd ../frontend && npm install && npm run dev    # dashboard
 
 ```bash
 cd backend
-pytest tests/ -v              # 405 tests
+pytest tests/ -v              # 430 tests
 python tests/benchmark.py     # detection metrics (internal set)
 python tests/benchmark_external.py   # external benchmark (ai4privacy FR)
 ```

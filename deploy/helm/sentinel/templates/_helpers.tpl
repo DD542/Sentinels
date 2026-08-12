@@ -33,6 +33,25 @@ app.kubernetes.io/name: {{ include "sentinel.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
+{{/*
+Sélecteur de l'API seule.
+
+Depuis que la console est déployée par le même chart, ses pods portent
+les mêmes labels `name`/`instance` que l'API. Un sélecteur qui s'arrête
+là attraperait les deux : le Service de l'API enverrait des requêtes à
+nginx, et le ServiceMonitor scruterait /metrics sur la console. D'où le
+label de composant.
+
+`spec.selector` du Deployment reste volontairement inchangé : ce champ
+est IMMUABLE, y toucher ferait échouer tout `helm upgrade` en place. Il
+ne peut pas adopter les pods de la console, qui n'ont pas le hash de son
+ReplicaSet.
+*/}}
+{{- define "sentinel.apiSelectorLabels" -}}
+{{ include "sentinel.selectorLabels" . }}
+app.kubernetes.io/component: api
+{{- end -}}
+
 {{- define "sentinel.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create -}}
 {{- default (include "sentinel.fullname" .) .Values.serviceAccount.name -}}

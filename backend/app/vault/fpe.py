@@ -266,7 +266,8 @@ async def tokenize_async(value: str, etype: EntityType,
                     "VALUES ($1, $2, $3, $4, $5) "
                     "ON CONFLICT (client_id, token) DO UPDATE "
                     "SET expires_at = EXCLUDED.expires_at",
-                    client_id, token, db.encrypt(value), etype.value, expires,
+                    client_id, token, db.encrypt(value, client_id),
+                    etype.value, expires,
                 )
         except Exception as e:
             from .. import logs
@@ -301,9 +302,13 @@ async def _db_candidates(client_id: str = DEFAULT_CLIENT) -> dict[str, tuple[str
                 "ORDER BY created_at DESC LIMIT $2",
                 client_id, _DB_CANDIDATE_LIMIT)
         for r in rows:
-            real = db.decrypt(r["cipher"])
+            real = db.decrypt(r["cipher"], client_id)
             if real is None:
-                continue          # clé maître changée : on ignore la ligne
+                # Clé changée, ou ligne chiffrée pour un AUTRE client :
+                # dans les deux cas, on n'en tire rien. C'est ce
+                # cloisonnement cryptographique qui rend une erreur de
+                # filtrage SQL inoffensive.
+                continue
             try:
                 out[r["token"]] = (real, EntityType(r["entity_type"]))
             except ValueError:
